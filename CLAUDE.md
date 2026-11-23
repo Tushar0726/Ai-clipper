@@ -40,7 +40,7 @@ without asking him to repeat anything.
 5. **Render** (approved style = `pro_render.py`), one background job, best clips first:
    `$PY ~/.claude/skills/gta6-clipper/scripts/pro_render.py <run> --top 40 --min-score 7.0 > ~/render.log 2>&1 &`
    Watch `~/render.log` with a Monitor (`grep "clip [0-9]*:|FAILED"`), ~5 min per clip.
-   What the style does: 2160x3840, facecam top / gameplay bottom with a green seam, white hook card,
+   What the style does: 2160x3840, **Neon facecam top 30%**, then a dark caption band (subtitles live here, never on his face or the gameplay), then gameplay, green seams; white hook card only for the first 3.5 s,
    big word-by-word captions (yellow active word), a few emojis, punch-in zooms on loud peaks,
    **jump cuts that remove pauses** (he asked for this), progress bar, loudness -14 LUFS, **30-60 s** per clip.
    - If a clip fails with an `imgutils.c ... dst_linesize` assertion, it's a layout problem (dead facecam):

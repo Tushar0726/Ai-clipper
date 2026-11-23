@@ -143,24 +143,34 @@ def caption_track(words, pick, seam_y, cap_y, dur, outdir):
     blank = outdir / "blank.png"
     base_im = base()
     base_im.save(blank)
+    HOOK_T = 3.5  # hook card only for the first seconds, then the gameplay is clean
+    plain_im = Image.new("RGBA", (OW, OH), (0, 0, 0, 0))
+    blank_plain = outdir / "blank_plain.png"
+    plain_im.save(blank_plain)
     timeline, t, k = [], 0.0, 0
+
+    def add_blank(a, b):
+        if a < HOOK_T and min(b, HOOK_T) - a > 0.001:
+            timeline.append((blank, min(b, HOOK_T) - a))
+        if b > HOOK_T and b - max(a, HOOK_T) > 0.001:
+            timeline.append((blank_plain, b - max(a, HOOK_T)))
     for t0, t1, gi, ai, sc in states:
         if t0 < t:
             t0 = t
         if t1 - t0 < 0.03:
             continue
         if t0 > t + 0.02:
-            timeline.append((blank, t0 - t))
-        im = base_im.copy()
+            add_blank(t, t0)
+        im = (base_im if t0 < HOOK_T else plain_im).copy()
         d = ImageDraw.Draw(im)
         text = [w["t"].upper() for w in groups[gi]]
-        size = int(168 * sc)
+        size = int(140 * sc)
         cf = fnt(size)
         widths = [d.textlength(x, font=cf) for x in text]
         space = d.textlength(" ", font=cf)
         total = sum(widths) + space * (len(text) - 1)
-        if total > 1960:
-            size = int(size * 1960 / total)
+        if total > 1700:
+            size = int(size * 1700 / total)
             cf = fnt(size)
             widths = [d.textlength(x, font=cf) for x in text]
             space = d.textlength(" ", font=cf)
@@ -173,15 +183,15 @@ def caption_track(words, pick, seam_y, cap_y, dur, outdir):
                    stroke_width=max(6, size // 12), stroke_fill=(0, 0, 0))
             x += wd + space
         if gi in emo:
-            e = emoji_img(emo[gi], int(230 * sc))
-            im.alpha_composite(e, (int(OW / 2 - e.width / 2), int(cap_y - size * 0.62 - e.height - 20)))
+            e = emoji_img(emo[gi], int(170 * sc))
+            im.alpha_composite(e, (int(min(OW - e.width - 20, OW / 2 + total / 2 + 24)), int(cap_y - e.height / 2)))
         p = outdir / f"c{k:05d}.png"
         im.save(p, compress_level=1)
         k += 1
         timeline.append((p, t1 - t0))
         t = t1
     if t < dur:
-        timeline.append((blank, dur - t))
+        add_blank(t, dur)
     lst = outdir / "list.ffconcat"
     body = ["ffconcat version 1.0"]
     for p, d_ in timeline:
@@ -356,23 +366,28 @@ def render(rd, info, c, n, keep):
     sharpen = "unsharp=5:5:0.7:5:5:0.0"
     seam_px = 14
     if fc["mode"] == "facecam":
+        # owner's layout: Neon = top 30 %, then a dark caption band (subtitles live here: not on
+        # Neon's face, not on the gameplay), then the gameplay
         L, T, cw, ch = fc["box"]
-        top_h = int(min(1920, max(1120, OW * ch / cw)))
-        top_h -= top_h % 2
-        bot_h = OH - top_h - seam_px
+        top_h = int(OH * 0.30) // 2 * 2
+        band_h = 300
+        bot_h = OH - top_h - band_h - 2 * seam_px
         gw, gh = H * OW / bot_h, H
         if gw > W:
             gw, gh = W, W * bot_h / OW
         gx, gy = (W - gw) / 2, (H - gh) / 2
+        acc = f"0x{ACCENT[0]:02x}{ACCENT[1]:02x}{ACCENT[2]:02x}"
         vf = (f"[0:v]fps={FPS},split[a][b];"
-              f"[a]crop={cw}:{ch}:{L}:{T},scale={OW}:{top_h}:force_original_aspect_ratio=increase:{up},"
-              f"crop={OW}:{top_h},{sharpen},eq=saturation=1.08[top];"
+              f"[a]crop={cw}:{ch}:{L}:{T},scale={OW}:-2:{up},"
+              f"crop={OW}:'min(ih,{top_h})':0:'max(0,(ih-{top_h})*0.15)',scale={OW}:{top_h}:{up},{sharpen},eq=saturation=1.08[top];"
               f"[b]crop={int(gw)}:{int(gh)}:{int(gx)}:{int(gy)},"
               f"scale=w='trunc({OW}*{z}/2)*2':h='trunc({bot_h}*{z}/2)*2':eval=frame:{up},"
               f"crop={OW}:{bot_h}:(iw-{OW})/2:(ih-{bot_h})/2,{sharpen},eq=saturation=1.12:contrast=1.04[bot];"
-              f"color=c=0x{ACCENT[0]:02x}{ACCENT[1]:02x}{ACCENT[2]:02x}:s={OW}x{seam_px}:r={FPS}[seam];"
-              f"[top][seam][bot]vstack=3:shortest=1[base]")
-        seam, cap_y = top_h + seam_px // 2, top_h + int(bot_h * 0.60)
+              f"color=c={acc}:s={OW}x{seam_px}:r={FPS}[seam];color=c={acc}:s={OW}x{seam_px}:r={FPS}[seam2];"
+              f"color=c=0x0b0d09:s={OW}x{band_h}:r={FPS}[band];"
+              f"[top][seam][band][seam2][bot]vstack=5:shortest=1[base]")
+        band_mid = top_h + seam_px + band_h // 2
+        seam, cap_y = top_h + 2 * seam_px + band_h + 220, band_mid  # hook (first 3.5 s) just below the band
     elif fc["mode"] == "cam":
         fx, fy, fw, fh = fc["face"]
         cw = min(W, H * 9 / 16)
