@@ -68,3 +68,10 @@ Chat file cards have no download button on his iPad, and outside file hosts are 
   for Miami/city, funny/cartoon for fails, suspense for twists. Volume 10-20 %.
 - Posting from iPad: Buffer or Metricool (free) to post to Instagram, YouTube, TikTok, Facebook at once.
   2-3 clips a day, credit the streamer in the description.
+
+## OpusClip (connected: YouTube AVYUKTX, Instagram avyuk_tx, Facebook page Avyuktx; NOT TikTok, he doesn't want TikTok)
+- Our 4K clips can be uploaded (create_upload_link → resumable PUT → submit_project with skipCurate:true,
+  enableCaption:false) and posted with create_post_task / schedule_publish (he approves each in the OpusClip app).
+- **On the TRIAL plan OpusClip burns an "OpusClip" watermark into the video. He does NOT want any watermark.**
+  Never post through OpusClip while the plan is TRIAL (check opusclip_whoami). Tell him this up front.
+- Ask him which clip numbers to post; never pick or post on your own.
