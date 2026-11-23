@@ -43,8 +43,8 @@ def prep(src, dst):
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", src,
            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
                   "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p",
-           "-c:v", "libx264", "-profile:v", "high", "-preset", "medium", "-crf", "20",
-           "-maxrate", "12M", "-bufsize", "24M",
+           "-c:v", "libx264", "-profile:v", "high", "-preset", "medium", "-crf", "17",
+           "-maxrate", "16M", "-bufsize", "32M",
            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
            "-movflags", "+faststart", dst]
     subprocess.run(cmd, check=True)
