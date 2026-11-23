@@ -1,0 +1,133 @@
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: one column of clip cards; thumbnail left, actions right; stacks on phones */
+:root {
+  --bg: #f4f6f1; --panel: #ffffff; --fg: #16190f; --muted: #5d6452; --line: #dde3d3;
+  --accent: #2f9e0e; --accent-ink: #ffffff; --chip: #eaf6e2; --warn: #b4530a;
+  --display: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f120c; --panel: #181c13; --fg: #eef2e6; --muted: #a0a993; --line: #2b3222;
+  --accent: #53fc18; --accent-ink: #0b1207; --chip: #1f2a15; --warn: #f0a050; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f120c; --panel: #181c13; --fg: #eef2e6; --muted: #a0a993; --line: #2b3222;
+  --accent: #53fc18; --accent-ink: #0b1207; --chip: #1f2a15; --warn: #f0a050; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 860px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 20px; }
+header h1 { font-family: var(--display); font-size: clamp(26px, 5vw, 36px); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+header p { margin: 6px 0 0; color: var(--muted); max-width: 62ch; }
+.how { background: var(--chip); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+.how b { font-weight: 600; }
+.list { display: grid; gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+  display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 14px; }
+.card img { width: 120px; aspect-ratio: 9/16; object-fit: cover; border-radius: 8px; background: var(--line); max-width: 100%; }
+.meta { min-width: 0; display: grid; gap: 8px; align-content: start; }
+.top { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.rank { font-family: var(--display); font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.title { font-family: var(--display); font-weight: 700; font-size: 17px; margin: 0; text-wrap: balance; }
+.facts { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: 600 14px var(--body); border-radius: 8px; padding: 9px 12px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:disabled { opacity: .6; cursor: default; }
+button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.status { font-size: 13px; color: var(--muted); min-height: 1.2em; }
+.status.err { color: var(--warn); }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+details { font-size: 14px; }
+details pre { white-space: pre-wrap; word-break: break-word; background: var(--chip); padding: 10px; border-radius: 8px; margin: 6px 0 0; font: 13px/1.5 var(--body); }
+.empty { color: var(--muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
+@media (max-width: 480px) { .card { grid-template-columns: 88px minmax(0, 1fr); } .card img { width: 88px; } }
+@media (prefers-reduced-motion: reduce) { .bar > i { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>__HEADING__</h1>
+    <p>__INTRO__</p>
+  </header>
+  <div class="how"><b>To save a clip:</b> tap <b>Download 4K</b>, wait for the bar to fill, then confirm the save. On iPad it goes to the Files app (Downloads). From Files, tap the clip, then Share, then <b>Save Video</b> to put it in Photos.</div>
+  <div class="list" id="list"><div class="empty">Loading clips…</div></div>
+</div>
+
+<script>
+const list = document.getElementById("list");
+let downloadsApi;
+const dlReady = (window.claude && window.claude.use) ? window.claude.use("downloads").then(d => (downloadsApi = d)) : Promise.resolve(null);
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function safeUrl(u) { return typeof u === "string" && (u.startsWith("/_blob/") || u.startsWith("https://") || /^[\w./-]+$/.test(u)) ? u : ""; }
+
+async function copy(text, btn) {
+  const label = btn.textContent;
+  try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
+  catch { btn.textContent = "Select below"; }
+  setTimeout(() => (btn.textContent = label), 1500);
+}
+
+async function download(clip, btn, statusEl, barEl) {
+  btn.disabled = true; statusEl.className = "status"; barEl.style.width = "0%";
+  try {
+    await dlReady;
+    if (!downloadsApi) throw new Error("Downloads aren't available in this view. Open this page in Safari at claude.ai and try again.");
+    const blobs = [];
+    for (let i = 0; i < clip.parts.length; i++) {
+      statusEl.textContent = `Downloading part ${i + 1} of ${clip.parts.length}…`;
+      const r = await fetch(safeUrl(clip.parts[i]));
+      if (!r.ok) throw new Error(`Part ${i + 1} failed to load (${r.status}). Try again.`);
+      blobs.push(await r.blob());
+      barEl.style.width = `${Math.round(((i + 1) / clip.parts.length) * 100)}%`;
+    }
+    const file = new Blob(blobs, { type: "video/mp4" });
+    statusEl.textContent = `Ready (${(file.size / 1e6).toFixed(0)} MB). Confirm the save…`;
+    await downloadsApi.save({ filename: clip.filename, data: file });
+    statusEl.textContent = "Saved.";
+  } catch (e) {
+    statusEl.className = "status err";
+    const code = e && e.code;
+    statusEl.textContent = code === "declined" ? "Save cancelled." : (code ? `Save failed (${code}). Try again.` : (e.message || "Download failed. Try again."));
+  } finally { btn.disabled = false; }
+}
+
+function render(clips) {
+  list.replaceChildren();
+  if (!clips.length) { list.append(el("div", "empty", "Clips appear here as they finish rendering.")); return; }
+  clips.forEach(c => {
+    const card = el("article", "card");
+    const img = el("img"); img.alt = c.title; img.loading = "lazy"; img.src = safeUrl(c.thumb);
+    const meta = el("div", "meta");
+    const top = el("div", "top");
+    top.append(el("span", "rank", `#${c.rank}`), el("h2", "title", c.title));
+    const facts = el("div", "facts", `${c.length} · 4K 2160×3840 · ${c.sizeMB} MB · score ${c.score}/10`);
+    const row = el("div", "row");
+    const dl = el("button", "primary", "Download 4K");
+    const bCopyT = el("button", "", "Copy title");
+    const bCopyD = el("button", "", "Copy description");
+    const bCopyH = el("button", "", "Copy hashtags");
+    row.append(dl, bCopyT, bCopyD, bCopyH);
+    const bar = el("div", "bar"); const fill = el("i"); bar.append(fill);
+    const status = el("div", "status");
+    const det = el("details"); det.append(el("summary", "", "Show post text"));
+    const pre = el("pre", "", `TITLE:\n${c.title}\n\nDESCRIPTION:\n${c.description}\n\nHASHTAGS:\n${c.hashtags}`);
+    det.append(pre);
+    dl.addEventListener("click", () => download(c, dl, status, fill));
+    bCopyT.addEventListener("click", () => copy(c.title, bCopyT));
+    bCopyD.addEventListener("click", () => copy(c.description, bCopyD));
+    bCopyH.addEventListener("click", () => copy(c.hashtags, bCopyH));
+    meta.append(top, facts, row, bar, status, det);
+    card.append(img, meta);
+    list.append(card);
+  });
+}
+
+fetch("clips.json", { cache: "no-store" }).then(r => r.json()).then(d => render(Array.isArray(d) ? d : []))
+  .catch(() => { list.replaceChildren(el("div", "empty", "Couldn't load the clip list. Reload the page.")); });
+</script>
