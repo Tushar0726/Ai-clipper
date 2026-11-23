@@ -6,7 +6,9 @@ delivered as **download pages** he can open on his iPad. This file is the full p
 without asking him to repeat anything.
 
 ## About the owner (important)
-- Talk to him in **English** (Hinglish words are fine). **Never reply in full Hindi**, even if he writes in Hindi.
+- Talk to him in **Hinglish: a natural mix of Hindi and English, written in Roman letters**
+  (e.g. "Bhai, clip ready hai, download page pe daal diya"). **Not pure English, not pure Hindi / Devanagari.**
+  He has had to repeat this many times; get it right from the first message.
 - He is in **Canada**: give times in Toronto (ET) and, if useful, Vancouver (PT). Never UTC alone.
 - He uses an **iPad only**, so no computer. He can't download files from chat cards; give him **download pages** (see below).
 - He wants **4K quality, never downscaled**. He refused 1080p versions.

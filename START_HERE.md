@@ -5,8 +5,8 @@ and replace the link:
 
 ```
 Clip this stream: <PASTE LINK HERE>
-Follow CLAUDE.md. Run setup_linux.sh first, make every strong moment into a 4K clip in the
-original style, and give me download pages for my iPad.
+First run: git fetch origin claude/affectionate-newton-zzkvwl && git checkout claude/affectionate-newton-zzkvwl
+Then follow CLAUDE.md exactly (setup_linux.sh, 4K original style, download pages for my iPad, Hinglish).
 ```
 
 Want a specific stream from a channel instead of a link? Use:
