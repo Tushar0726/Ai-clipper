@@ -328,7 +328,9 @@ def render(rd, info, c, n, keep):
     target = c["_e"] - c["_s"]
     win = min(target + 24, sdur - ss)
 
-    fc = g.find_facecam(src, W, H)
+    from overlay_box import overlay_box  # exact overlay edges; the face-based guess sometimes grabbed only the face
+    ob = overlay_box(src)
+    fc = {"mode": "facecam", "box": list(ob)} if ob else g.find_facecam(src, W, H)
     forced = c.get("layout")
     if forced == "gameplay" or (forced == "cam" and "face" not in fc):
         fc = {"mode": "gameplay"}
