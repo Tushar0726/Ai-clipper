@@ -376,6 +376,7 @@ def render(rd, info, c, n, keep):
         if gw > W:
             gw, gh = W, W * bot_h / OW
         gx, gy = (W - gw) / 2, (H - gh) / 2
+        if L + cw + 4 + gw <= W: gx = max(gx, L + cw + 4)  # keep the facecam overlay out of the gameplay panel
         acc = f"0x{ACCENT[0]:02x}{ACCENT[1]:02x}{ACCENT[2]:02x}"
         vf = (f"[0:v]fps={FPS},split[a][b];"
               f"[a]crop={cw}:{ch}:{L}:{T},scale={OW}:-2:{up},"

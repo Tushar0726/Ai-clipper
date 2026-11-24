@@ -47,6 +47,7 @@ without asking him to repeat anything.
      the script retries as `"layout": "gameplay"` automatically; else set it in that pick and use `--only N`.
    - `pro_render_v4.py` = alternative "full-screen gameplay + small Neon box" style. He looked at it and decided
      to **keep the original style**, so use `pro_render.py` unless he asks for full-screen.
+   - QA also: no long black screens (game loading) in the gameplay panel (`blackdetect`); cut them out if found.
    - **QA every clip before delivering**: grab a frame (ffmpeg -ss 12) and look at it. The facecam must be the
      whole overlay box (not just the face), same size as the other clips, and sharp. `overlay_box.py` finds the box
      from its straight edges; he was upset when clips 11-37 shipped with a blurry over-zoomed face.
