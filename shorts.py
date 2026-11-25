@@ -224,8 +224,12 @@ def plan_layout(layout, src_w, src_h, face, W, H):
     cam_aspect = W / band
     ch = even(min(src_h, fh * 2.2))
     cw = even(min(src_w, ch * cam_aspect))
+    # stay inside the webcam box (it is ~4-5 face-widths wide): never show game in the panel
+    box_right = fx + fw * 3.4 if fx < src_w / 2 else src_w
+    box_left = fx - fw * 2.4 if fx >= src_w / 2 else 0
+    cw = even(min(cw, box_right - max(0, box_left)))
     ch = even(cw / cam_aspect)
-    cx = even(min(max(0, fx + fw / 2 - cw / 2), src_w - cw))
+    cx = even(min(max(max(0, box_left), fx + fw / 2 - cw / 2), min(src_w, box_right) - cw))
     cy = even(min(max(0, fy + fh * 0.45 - ch / 2), src_h - ch))
     # gameplay crop: as central as possible but away from the webcam box
     cam_left, cam_right = fx - fw * 1.5, fx + fw * 2.5
