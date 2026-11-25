@@ -371,7 +371,12 @@ def main():
     p.add_argument("--game", default="", help="keep only clips whose category contains this (kick)")
     p.add_argument("--min-views", type=int, default=0)
     p.add_argument("--max-seconds", type=int, default=60, help="trim longer clips (0 = no trim)")
-    p.add_argument("--style", choices=["blur", "crop"], default="blur")
+    p.add_argument("--style", choices=["shorts", "blur", "crop"], default="shorts",
+                   help="shorts = streamer+gameplay layout with subtitles, hook and transitions")
+    p.add_argument("--layout", choices=["inline", "panel"], default="inline",
+                   help="shorts: inline = streamer already inside the game frame (Carry); "
+                        "panel = webcam box moved to the bottom 20%% (N3on)")
+    p.add_argument("--hd", action="store_true", help="shorts: 1080x1920 instead of 4K")
     p.add_argument("--out", default="output")
     p.add_argument("--safe", action="store_true",
                    help="skip clips marked mature or with strip-club / nudity titles")
@@ -450,7 +455,12 @@ def main():
                 print(f"[{i}/{len(clips)}] {name}")
                 fetch(c["source"], raw, a.max_seconds, c.get("start"), c.get("end"), cookies,
                       0 if "start" in c else c["duration"])
-                to_vertical(raw, final, a.style)
+                if a.style == "shorts":
+                    from shorts import render_short
+                    W, H = (1080, 1920) if a.hd else (2160, 3840)
+                    render_short(raw, final, a.layout, c["creator"], W, H)
+                else:
+                    to_vertical(raw, final, a.style)
                 raw.unlink(missing_ok=True)
                 w.writerow([i, name, c["creator"], c["views"], c["title"], c["created"], c["page"]])
             except subprocess.CalledProcessError as e:
