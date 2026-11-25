@@ -200,12 +200,17 @@ def transcribe(path, model=None, lang="en"):
     pcm = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1",
                           "-ar", "16000", "-"], capture_output=True, check=True).stdout
     audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768
+    if lang == "hi":  # Carry may be quiet while English game dialogue plays: let Whisper decide
+        _, info = _whisper[model].transcribe(audio[:16000 * 30], language=None)
+        lang = "hi" if info.language in ("hi", "ur") else "en"
     segs, _ = _whisper[model].transcribe(audio, language=lang, word_timestamps=True, vad_filter=True,
                                   condition_on_previous_text=False)
     words = []
     for s in segs:
         for w in s.words or []:
             t = w.word.strip()
+            if (w.probability or 0) < 0.45:  # unsure words become garbage subtitles: skip them
+                continue
             if lang == "hi":
                 t = to_hinglish(t)
             t = censor(t)
