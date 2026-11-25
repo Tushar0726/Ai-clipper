@@ -12,6 +12,9 @@ Examples
   # best moments of a long YouTube stream (run this on YOUR PC)
   python clipper.py youtube "https://www.youtube.com/live/qSyo5d-dVzA" --top 25
 
+  # hype moments from a Kick channel's full past streams (100+ clips)
+  python clipper.py kick-vods carryminati --game "Grand Theft Auto VI" --top 80
+
   # top clips from a Twitch channel (last 7 days)
   python clipper.py twitch-channel kaicenat --range 7d --top 10
 """
@@ -64,6 +67,8 @@ def _kick_normalize(c):
         "source": c["clip_url"],
         "page": f"https://kick.com/{(c.get('channel') or {}).get('slug', '')}/clips/{c['id']}",
         "stream": str(c.get("livestream_id") or ""),
+        "mature": bool(c.get("is_mature")),
+        "thumb": c.get("thumbnail_url") or "",
         "created_ts": c.get("created_at") or "",
     }
 
@@ -138,6 +143,64 @@ def _pick_peaks(levels, offset, n, spacing):
     return [(offset + i, score) for i, score in picked]
 
 
+def kick_vods(slug, game, limit, clip_len, max_vods=30, workers=3):
+    """Find hype moments inside a Kick channel's past streams (VODs).
+
+    Audio is analysed from the tiny 160p rendition (cheap); clips are cut
+    from the 1080p rendition. Moments that viewers already clipped are
+    skipped, so this complements `kick-channel`.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+    vods = _kick_get(f"https://kick.com/api/v2/channels/{slug}/videos")
+    vods = vods if isinstance(vods, list) else vods.get("data", [])
+    if game:
+        vods = [v for v in vods if any(game.lower() in (x.get("name") or "").lower()
+                                       for x in v.get("categories") or [])]
+    vods = vods[:max_vods]
+    if not vods:
+        return []
+
+    def ts(s):
+        return datetime.fromisoformat(s.replace("Z", "")[:19]).timestamp()
+
+    # end-times (seconds into each VOD) of clips viewers already made
+    taken = {}
+    for c in _kick_paged(f"https://kick.com/api/v2/channels/{slug}/clips", "month", 300):
+        taken.setdefault(str(c.get("livestream_id")), []).append(ts(c["created_at"]))
+
+    per_vod = max(2, -(-limit // len(vods)) + 2)
+
+    def analyse(v):
+        master = v["source"]
+        start_ts = ts(v["start_time"])
+        print(f"  analysing {v.get('session_title', '')[:40]} ({v['duration'] / 3.6e6:.1f}h)", flush=True)
+        try:
+            levels = _loudness_per_second(master.replace("master.m3u8", "160p30/playlist.m3u8"))
+        except subprocess.CalledProcessError:
+            return []
+        done = [t - start_ts for t in taken.get(str(v.get("id")), [])]
+        peaks = [(t, s) for t, s in _pick_peaks(levels, 0, per_vod * 3, clip_len)
+                 if all(abs(t - d) > clip_len * 1.5 for d in done)][:per_vod]
+        hd = master.replace("master.m3u8", "1080p60/playlist.m3u8")
+        out = []
+        for t, score in peaks:
+            st = max(0, t - int(clip_len * 0.6))
+            out.append({
+                "creator": slug,
+                "title": f"{(v.get('session_title') or '')[:28]} @{st // 3600}h{st % 3600 // 60:02d}m{st % 60:02d}s",
+                "views": int(score * 100), "duration": clip_len, "game": game,
+                "created": v["start_time"][:10], "source": hd, "start": st, "end": st + clip_len,
+                "page": f"https://kick.com/{slug}/videos/{(v.get('video') or {}).get('uuid', '')}?t={st}",
+            })
+        return out
+
+    with ThreadPoolExecutor(workers) as ex:
+        clips = [c for group in ex.map(analyse, vods) for c in group]
+    clips.sort(key=lambda c: c["views"], reverse=True)
+    return clips[:limit]
+
+
 def youtube_stream(url, limit, clip_len, cookies, workdir):
     """Find the best moments of a long YouTube stream/VOD.
 
@@ -200,6 +263,15 @@ def youtube_stream(url, limit, clip_len, cookies, workdir):
     return clips
 
 
+NSFW_WORDS = ("strip", "nude", "naked", "lap dance", "lapdance", "twerk", "boob", "sex",
+              "porn", "nsfw", "18+", "çıplak", "çiplak", "ciplak", "cıplak", "gacie", "bikini", "hooker")
+
+
+def is_nsfw(c):
+    t = c["title"].lower()
+    return c.get("mature") or any(w in t for w in NSFW_WORDS)
+
+
 def drop_duplicates(clips):
     """Several viewers often clip the same moment. Keep only the most-viewed
     clip when two clips come from the same stream and were made within
@@ -227,8 +299,16 @@ def safe_name(s, n=40):
     return (s or "clip")[:n]
 
 
-def fetch(src, dst, max_seconds, start=None, end=None, cookies=None):
-    """Download a clip (m3u8 or page URL) to dst."""
+def fetch(src, dst, max_seconds, start=None, end=None, cookies=None, duration=0):
+    """Download a clip (m3u8 or page URL) to dst. Clips longer than
+    max_seconds keep their LAST max_seconds (where the moment usually is)."""
+    tail_from = max(0, int(duration) - max_seconds) if max_seconds and duration else 0
+    if start is None and tail_from and not src.endswith(".m3u8"):
+        start, end = tail_from, int(duration)
+    if start is not None and src.endswith(".m3u8"):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA, "-ss", str(start),
+                        "-i", src, "-t", str(end - start), "-c", "copy", str(dst)], check=True)
+        return
     if start is not None:
         subprocess.run(_ytdlp(cookies) + [
             "-q", "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b",
@@ -237,7 +317,10 @@ def fetch(src, dst, max_seconds, start=None, end=None, cookies=None):
             "-o", str(dst), src], check=True)
         return
     if src.endswith(".m3u8"):
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA, "-i", src]
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA]
+        if tail_from:  # the hype moment is usually at the END of a clip
+            cmd += ["-ss", str(tail_from)]
+        cmd += ["-i", src]
         if max_seconds:
             cmd += ["-t", str(max_seconds)]
         cmd += ["-c", "copy", str(dst)]
@@ -269,7 +352,7 @@ def to_vertical(src, dst, style):
 # ---------------------------------------------------------------- main
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("source", choices=["kick-channel", "kick-category", "twitch-channel", "youtube"])
+    p.add_argument("source", choices=["kick-channel", "kick-vods", "kick-category", "twitch-channel", "youtube"])
     p.add_argument("name", help="channel slug / category slug / twitch login / youtube URL")
     p.add_argument("--clip-len", type=int, default=35, help="youtube: seconds per clip")
     p.add_argument("--cookies-from-browser", default="",
@@ -282,6 +365,9 @@ def main():
     p.add_argument("--max-seconds", type=int, default=60, help="trim longer clips (0 = no trim)")
     p.add_argument("--style", choices=["blur", "crop"], default="blur")
     p.add_argument("--out", default="output")
+    p.add_argument("--safe", action="store_true",
+                   help="skip clips marked mature or with strip-club / nudity titles")
+    p.add_argument("--exclude-creators", nargs="*", default=[])
     p.add_argument("--skip-existing", nargs="*", default=[],
                    help="clips.csv file(s) from earlier runs: skip clips already made")
     p.add_argument("--list-only", action="store_true", help="just print the ranking")
@@ -297,6 +383,9 @@ def main():
         vid = re.search(r"(?:v=|/live/|youtu\.be/|/shorts/)([\w-]{11})", a.name)
         out_name = vid.group(1) if vid else safe_name(a.name)
         clips = youtube_stream(a.name, a.top, a.clip_len, cookies, Path(a.out) / out_name / "_raw")
+    elif a.source == "kick-vods":
+        clips = kick_vods(a.name, a.game, a.top, a.clip_len)
+        a.game = ""  # already filtered by stream category
     elif a.source == "kick-channel":
         clips = kick_channel(a.name, a.time, a.top)
     elif a.source == "kick-category":
@@ -312,6 +401,13 @@ def main():
     clips = drop_duplicates(clips)
     if before != len(clips):
         print(f"Removed {before - len(clips)} duplicate clips of the same moment")
+    if a.safe:
+        n = len(clips)
+        clips = [c for c in clips if not is_nsfw(c)]
+        print(f"--safe: removed {n - len(clips)} mature / strip-club clips")
+    if a.exclude_creators:
+        ex = {x.lower() for x in a.exclude_creators}
+        clips = [c for c in clips if c["creator"].lower() not in ex]
     if a.skip_existing:
         seen = set()
         for csv_path in a.skip_existing:
@@ -323,7 +419,7 @@ def main():
         sys.exit("No clips found for that source / filter.")
 
     for i, c in enumerate(clips, 1):
-        label = "hype" if a.source == "youtube" else "views"
+        label = "hype" if a.source in ("youtube", "kick-vods") else "views"
         print(f"{i:>3}. {c['views']:>8,} {label} | {c['creator']:<15} | {c['duration']:>4}s | {c['title'][:50]}")
     if a.list_only:
         return
@@ -336,12 +432,13 @@ def main():
         w = csv.writer(f)
         w.writerow(["rank", "file", "creator", "views", "title", "created", "original"])
         for i, c in enumerate(clips, 1):
-            tag = "" if a.source == "youtube" else f"_{c['views']}v"
+            tag = "" if a.source in ("youtube", "kick-vods") else f"_{c['views']}v"
             name = f"{i:02d}_{c['creator']}{tag}_{safe_name(c['title'])}.mp4"
             raw, final = tmp / name, out / name
             try:
                 print(f"[{i}/{len(clips)}] {name}")
-                fetch(c["source"], raw, a.max_seconds, c.get("start"), c.get("end"), cookies)
+                fetch(c["source"], raw, a.max_seconds, c.get("start"), c.get("end"), cookies,
+                      0 if "start" in c else c["duration"])
                 to_vertical(raw, final, a.style)
                 raw.unlink(missing_ok=True)
                 w.writerow([i, name, c["creator"], c["views"], c["title"], c["created"], c["page"]])
