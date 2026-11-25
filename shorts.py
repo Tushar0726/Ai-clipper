@@ -106,8 +106,73 @@ def loudest_second(path):
 _whisper = None
 
 
-def transcribe(path, model="small"):
-    """Word timestamps [(start, end, word)] in romanised / English text."""
+# creators who speak Hindi: transcribe in Hindi, then write it in Roman letters (Hinglish)
+HINGLISH = {"carryminati"}
+
+
+_CONS = {"क": "k", "ख": "kh", "ग": "g", "घ": "gh", "ङ": "n", "च": "ch", "छ": "chh", "ज": "j", "झ": "jh",
+         "ञ": "n", "ट": "t", "ठ": "th", "ड": "d", "ढ": "dh", "ण": "n", "त": "t", "थ": "th", "द": "d",
+         "ध": "dh", "न": "n", "प": "p", "फ": "ph", "ब": "b", "भ": "bh", "म": "m", "य": "y", "र": "r",
+         "ल": "l", "व": "v", "श": "sh", "ष": "sh", "स": "s", "ह": "h", "क़": "q", "ख़": "kh", "ग़": "gh",
+         "ज़": "z", "ड़": "d", "ढ़": "dh", "फ़": "f", "य़": "y"}
+_VOW = {"अ": "a", "आ": "aa", "इ": "i", "ई": "ee", "उ": "u", "ऊ": "oo", "ए": "e", "ऐ": "ai", "ओ": "o",
+        "औ": "au", "ऋ": "ri", "ऑ": "o", "ऍ": "e"}
+_MATRA = {"ा": "a", "ि": "i", "ी": "ee", "ु": "u", "ू": "oo", "े": "e", "ै": "ai", "ो": "o", "ौ": "au",
+          "ृ": "ri", "ॉ": "o", "ॅ": "e"}
+_NUKTA, _VIRAMA = "\u093c", "\u094d"
+
+
+def to_hinglish(word):
+    """Devanagari -> casual Roman Hinglish ('क्या हो गया' -> 'kya ho gaya'),
+    dropping the silent 'a' the way Hindi is actually spoken."""
+    if not any("\u0900" <= ch <= "\u097f" for ch in word):
+        return word
+    # tokens: (kind, roman) with kind c = consonant (inherent a), C = consonant (no a), v = vowel
+    toks, i = [], 0
+    while i < len(word):
+        ch = word[i]
+        nxt = word[i + 1] if i + 1 < len(word) else ""
+        if ch + nxt in _CONS and nxt == _NUKTA:
+            ch, i = ch + nxt, i + 1
+            nxt = word[i + 1] if i + 1 < len(word) else ""
+        if ch in _CONS:
+            if nxt == _VIRAMA:
+                toks.append(("C", _CONS[ch])); i += 2; continue
+            if nxt in _MATRA:
+                toks.append(("C", _CONS[ch])); toks.append(("v", _MATRA[nxt])); i += 2; continue
+            toks.append(("c", _CONS[ch]))
+        elif ch in _VOW:
+            toks.append(("v", _VOW[ch]))
+        elif ch in ("ं", "ँ"):
+            toks.append(("v", "n"))
+        elif ch == "ः":
+            toks.append(("v", "h"))
+        elif ch not in (_NUKTA, _VIRAMA):
+            toks.append(("v", ch))
+        i += 1
+    out = []
+    for k, (kind, r) in enumerate(toks):
+        out.append(r)
+        if kind != "c":
+            continue
+        last = k == len(toks) - 1
+        # schwa deletion: drop the 'a' at the end of a word, and in the middle when a
+        # vowel comes before and a consonant+vowel comes after (shaanadaara -> shaandaar)
+        prev_vowel = k > 0 and toks[k - 1][0] in ("v", "c")
+        nxt_cv = k + 2 < len(toks) and toks[k + 1][0] in ("c", "C") and toks[k + 2][0] == "v"
+        if last and k > 0:
+            continue
+        if prev_vowel and nxt_cv and k > 0:
+            continue
+        out.append("a")
+    r = "".join(out)
+    if r.endswith("ee") and len(r) > 3:  # gaadee -> gaadi, bhaee -> bhai
+        r = r[:-2] + "i"
+    return r.replace("aai", "ai") if r.endswith("aai") else r
+
+
+def transcribe(path, model="small", lang="en"):
+    """Word timestamps [(start, end, word)] in Roman letters (English or Hinglish)."""
     global _whisper
     import numpy as np
     from faster_whisper import WhisperModel
@@ -116,12 +181,14 @@ def transcribe(path, model="small"):
     pcm = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1",
                           "-ar", "16000", "-"], capture_output=True, check=True).stdout
     audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768
-    segs, _ = _whisper.transcribe(audio, language="en", word_timestamps=True, vad_filter=True,
+    segs, _ = _whisper.transcribe(audio, language=lang, word_timestamps=True, vad_filter=True,
                                   condition_on_previous_text=False)
     words = []
     for s in segs:
         for w in s.words or []:
             t = w.word.strip()
+            if lang == "hi":
+                t = to_hinglish(t)
             if t:
                 words.append((w.start, w.end, t))
     return words
@@ -259,7 +326,8 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
     face = find_streamer_face(src)
     lay = plan_layout(layout, sw, sh, face, W, H)
     peak = loudest_second(src)
-    words = transcribe(src) if subtitles else []
+    lang = "hi" if creator.lower() in HINGLISH else "en"
+    words = transcribe(src, lang=lang) if subtitles else []
     hook = hook_text or pick_hook(words, peak, creator, src.name)
     h0 = max(0.0, min(peak - hook_len * 0.6, dur - hook_len))
     log(f"   face={face} layout={lay['kind']} peak={peak:.1f}s hook={hook!r} words={len(words)}")
