@@ -79,3 +79,16 @@ Chat file cards have no download button on his iPad, and outside file hosts are 
 - **On the TRIAL plan OpusClip burns an "OpusClip" watermark into the video. He does NOT want any watermark.**
   Never post through OpusClip while the plan is TRIAL (check opusclip_whoami). Tell him this up front.
 - Ask him which clip numbers to post; never pick or post on your own.
+
+## Carry-style layout (Hindi streams, Nov 2026) — what he approved last
+- `carry_wide.py spec.json`: gameplay almost full screen (9:16 window centred on the character, kept to the right of the
+  stream's own facecam), ~5% soft-blur bars top (hook, first 3 s) and bottom (subtitles), Carry as a clean person cut-out
+  (no box/blur) in the bottom-left corner. The cut-out mask comes from `camseg.py src.mp4 cx cy cw ch mask.mp4`
+  (MediaPipe selfie segmenter from the effects skill). Spec = keep segments, cam box, game_x, hook, word-timed lines.
+- Hindi subtitles: transcribe 6 s slices with ggml-large-v3-turbo `-l hi -ml 1 -sow` (short slices avoid repeat loops), then
+  write Roman Hinglish lines by hand with those word times. Never caption game dialogue (the game shows its own subtitles).
+- Effects (`~/.claude/skills/effects`): `postfx.py in out plan.json` runs only the effect windows through fx.py and overlays them.
+  He likes: pause-point "CARRY" arrow, yellow `reject-stamp` (SOLD!/UNLOCKED!/NITROUS!, color #FFD60A), `tap` Follow at the end.
+- Long-stream transcript for picking: 10-min pieces with `-l hi -tr` (translate) is ~4x faster than Hindi output.
+- Cloud session sleeps when idle: stay in an active turn (blocking waits) while rendering; restart work after any reboot.
+- Only deliver clips that are genuinely strong (he rejected weak "walking around" clips). No fake scores.
