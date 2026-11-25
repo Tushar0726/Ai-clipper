@@ -33,10 +33,18 @@ UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chr
 
 
 # ---------------------------------------------------------------- sources
-def _kick_get(url):
+def _kick_get(url, tries=6):
+    import time
+    import urllib.error
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    for k in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503) or k == tries - 1:
+                raise
+            time.sleep(15 * (k + 1))  # rate-limited: back off and retry
 
 
 def _kick_paged(base, time_range, limit):
