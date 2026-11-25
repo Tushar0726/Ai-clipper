@@ -208,16 +208,18 @@ def plan_layout(layout, src_w, src_h, face, W, H):
     small_face = face is not None and face[2] < src_w * 0.16
 
     if layout == "inline" or not small_face:
-        band = 0
+        # gameplay: centre crop - in GTA the player / car is always mid-screen
         gw = even(src_h * W / H)
-        center_x = (src_w - gw) // 2
-        x = center_x
-        if small_face:  # keep the streamer cut-out inside the crop
+        lay = {"kind": "inline", "band": 0, "game": (even((src_w - gw) // 2), 0, gw, src_h)}
+        if small_face:
+            # cut the streamer's own box out and pin it to the bottom-left corner
             fx, fy, fw, fh = face
-            lo = max(0, fx + fw + int(fw * 1.3) - gw)   # crop must reach his right side
-            hi = min(src_w - gw, max(0, fx - int(fw * 1.3)))  # and start left of him
-            x = min(max(center_x, lo), hi) if lo <= hi else max(0, min(src_w - gw, fx - int(fw * 1.3)))
-        return {"kind": "inline", "band": band, "game": (even(x), 0, gw, src_h)}
+            bx = even(max(0, fx - fw * 1.25))
+            by = even(max(0, fy - fh * 0.7))
+            bw = even(min(src_w - bx, fw * 3.4))
+            bh = even(min(src_h - by, fh * 2.9, src_h - by))
+            lay["cam"] = (bx, by, bw, bh)
+        return lay
 
     # panel: webcam box at the bottom
     fx, fy, fw, fh = face
@@ -253,7 +255,15 @@ def video_chain(lay, W, H, src, label, out, zoom="1", shake="0"):
             f":x='iw/2-(iw/zoom/2)+({shake})':y='ih/2-(ih/zoom/2)+({shake})*0.6',"
             f"scale={W}:{gh_out}:flags=lanczos,unsharp=5:5:0.7")
     if lay["kind"] == "inline":
-        return f"[{src}]{game},setsar=1[{out}]"
+        if "cam" not in lay:
+            return f"[{src}]{game},setsar=1[{out}]"
+        bx, by, bw, bh = lay["cam"]
+        k = W / gw * 0.85                     # streamer a bit smaller than game scale: more game visible
+        ow, oh = even(bw * k), even(bh * k)
+        return (f"[{src}]split[{label}a][{label}b];"
+                f"[{label}a]{game}[{label}g];"
+                f"[{label}b]fps=30,crop={bw}:{bh}:{bx}:{by},scale={ow}:{oh}:flags=lanczos,unsharp=5:5:0.7[{label}c];"
+                f"[{label}g][{label}c]overlay=0:{H - oh},setsar=1[{out}]")
     cx, cy, cw, ch = lay["cam"]
     return (f"[{src}]split[{label}a][{label}b];"
             f"[{label}a]{game}[{label}g];"
