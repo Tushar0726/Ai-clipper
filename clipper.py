@@ -175,10 +175,16 @@ def kick_vods(slug, game, limit, clip_len, max_vods=30, workers=3):
         master = v["source"]
         start_ts = ts(v["start_time"])
         print(f"  analysing {v.get('session_title', '')[:40]} ({v['duration'] / 3.6e6:.1f}h)", flush=True)
-        try:
-            levels = _loudness_per_second(master.replace("master.m3u8", "160p30/playlist.m3u8"))
-        except subprocess.CalledProcessError:
-            return []
+        cache = Path(".cache") / f"kick_{v.get('id')}.json"  # resume without re-analysing
+        if cache.exists():
+            levels = json.loads(cache.read_text())
+        else:
+            try:
+                levels = _loudness_per_second(master.replace("master.m3u8", "160p30/playlist.m3u8"))
+            except subprocess.CalledProcessError:
+                return []
+            cache.parent.mkdir(exist_ok=True)
+            cache.write_text(json.dumps(levels))
         done = [t - start_ts for t in taken.get(str(v.get("id")), [])]
         peaks = [(t, s) for t, s in _pick_peaks(levels, 0, per_vod * 3, clip_len)
                  if all(abs(t - d) > clip_len * 1.5 for d in done)][:per_vod]
@@ -338,7 +344,9 @@ def to_vertical(src, dst, style):
         vf = "scale=-2:1920,crop=1080:1920"
     else:
         vf = ("split[a][b];"
-              "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,eq=brightness=-0.08[bg];"
+              # blur a tiny copy then upscale: same look, ~3x faster
+              "[a]scale=144:256:force_original_aspect_ratio=increase,crop=144:256,"
+              "boxblur=6:2,eq=brightness=-0.08,scale=1080:1920[bg];"
               "[b]scale=1080:-2[fg];"
               "[bg][fg]overlay=(W-w)/2:(H-h)/2")
     subprocess.run([
@@ -435,6 +443,9 @@ def main():
             tag = "" if a.source in ("youtube", "kick-vods") else f"_{c['views']}v"
             name = f"{i:02d}_{c['creator']}{tag}_{safe_name(c['title'])}.mp4"
             raw, final = tmp / name, out / name
+            if final.exists():  # resume an interrupted run
+                w.writerow([i, name, c["creator"], c["views"], c["title"], c["created"], c["page"]])
+                continue
             try:
                 print(f"[{i}/{len(clips)}] {name}")
                 fetch(c["source"], raw, a.max_seconds, c.get("start"), c.get("end"), cookies,
