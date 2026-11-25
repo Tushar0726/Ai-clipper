@@ -63,6 +63,8 @@ def _kick_normalize(c):
         "game": (c.get("category") or {}).get("name", ""),
         "source": c["clip_url"],
         "page": f"https://kick.com/{(c.get('channel') or {}).get('slug', '')}/clips/{c['id']}",
+        "stream": str(c.get("livestream_id") or ""),
+        "created_ts": c.get("created_at") or "",
     }
 
 
@@ -198,6 +200,27 @@ def youtube_stream(url, limit, clip_len, cookies, workdir):
     return clips
 
 
+def drop_duplicates(clips):
+    """Several viewers often clip the same moment. Keep only the most-viewed
+    clip when two clips come from the same stream and were made within
+    each other's duration."""
+    from datetime import datetime
+    def ts(c):
+        try:
+            return datetime.fromisoformat(c["created_ts"][:19]).timestamp()
+        except (KeyError, ValueError):
+            return None
+    kept = []
+    for c in clips:  # already sorted by views, best first
+        t = ts(c)
+        dup = t is not None and c.get("stream") and any(
+            k.get("stream") == c["stream"] and ts(k) is not None
+            and abs(ts(k) - t) < max(k["duration"], c["duration"], 30) for k in kept)
+        if not dup:
+            kept.append(c)
+    return kept
+
+
 # ---------------------------------------------------------------- video
 def safe_name(s, n=40):
     s = re.sub(r"[^\w\- ]+", "", s, flags=re.UNICODE).strip().replace(" ", "_")
@@ -259,6 +282,8 @@ def main():
     p.add_argument("--max-seconds", type=int, default=60, help="trim longer clips (0 = no trim)")
     p.add_argument("--style", choices=["blur", "crop"], default="blur")
     p.add_argument("--out", default="output")
+    p.add_argument("--skip-existing", nargs="*", default=[],
+                   help="clips.csv file(s) from earlier runs: skip clips already made")
     p.add_argument("--list-only", action="store_true", help="just print the ranking")
     a = p.parse_args()
 
@@ -283,6 +308,16 @@ def main():
         clips = [c for c in clips if a.game.lower() in c["game"].lower()]
     clips = [c for c in clips if c["views"] >= a.min_views]
     clips.sort(key=lambda c: c["views"], reverse=True)
+    before = len(clips)
+    clips = drop_duplicates(clips)
+    if before != len(clips):
+        print(f"Removed {before - len(clips)} duplicate clips of the same moment")
+    if a.skip_existing:
+        seen = set()
+        for csv_path in a.skip_existing:
+            with open(csv_path, encoding="utf-8") as f:
+                seen |= {row["original"] for row in csv.DictReader(f)}
+        clips = [c for c in clips if c["page"] not in seen]
     clips = clips[: a.top]
     if not clips:
         sys.exit("No clips found for that source / filter.")
