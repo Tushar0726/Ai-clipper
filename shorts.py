@@ -34,9 +34,11 @@ TRANSITIONS = ["zoomin", "circleopen", "slideup", "fadewhite", "pixelize", "radi
 HOOKS = {
     "carryminati": ["CARRY KO YE NAHI PATA THA", "GTA 6 MEIN YE KYA HO GAYA", "CARRY KA DIMAG GHOOM GAYA",
                     "END TAK DEKHNA", "CARRY VS GTA 6", "YE GTA 6 HAI YA REAL LIFE?",
-                    "CARRY KA REACTION DEKHO", "SABSE PAGAL GTA 6 MOMENT"],
+                    "CARRY KA REACTION DEKHO", "SABSE PAGAL GTA 6 MOMENT", "YE KYA HO GAYA BHAI",
+                    "CARRY VS POLICE", "GTA 6 MEIN CARRY KA SCENE", "BHAI NE KAR DIYA"],
     "n3on": ["N3ON LOST IT IN GTA 6", "WAIT FOR THE END", "GTA 6 IS INSANE",
-             "N3ON CAN'T BELIEVE THIS", "CRAZIEST GTA 6 MOMENT", "N3ON VS GTA 6"],
+             "N3ON CAN'T BELIEVE THIS", "CRAZIEST GTA 6 MOMENT", "N3ON VS GTA 6", "HE DID NOT EXPECT THIS",
+             "GTA 6 WENT WRONG", "WATCH TILL THE END", "N3ON IS DONE"],
     "_": ["WAIT FOR IT", "GTA 6 IS INSANE", "CRAZIEST GTA 6 MOMENT"],
 }
 
@@ -103,7 +105,23 @@ def loudest_second(path):
     return (i + win / 2) * 0.5
 
 
-_whisper = None
+_whisper = {}
+# Hindi needs the big model; English is fine with the small one
+WHISPER_MODEL = {"hi": "large-v3-turbo", "en": "small"}
+
+# swear words are starred out in subtitles (YouTube / Instagram friendly)
+SWEARS = ("gandu", "gaandu", "laude", "lode", "lauda", "loda", "lavde", "chutiya", "chutiye", "madarchod",
+          "bhenchod", "behenchod", "bhosdi", "bhosdike", "bsdk", "bc", "mc", "randi", "harami", "kamina",
+          "fuck", "fucking", "fucked", "shit", "bitch", "nigga", "nigger", "dick", "pussy", "ass", "asshole")
+
+
+def censor(word):
+    core = "".join(ch for ch in word.lower() if ch.isalpha())
+    if core in SWEARS and len(core) > 2:
+        return core[0] + "*" * (len(core) - 2) + core[-1]
+    if core in SWEARS:
+        return "*" * len(core)
+    return word
 
 
 # creators who speak Hindi: transcribe in Hindi, then write it in Roman letters (Hinglish)
@@ -166,22 +184,23 @@ def to_hinglish(word):
             continue
         out.append("a")
     r = "".join(out)
-    if r.endswith("ee") and len(r) > 3:  # gaadee -> gaadi, bhaee -> bhai
-        r = r[:-2] + "i"
+    r = r.replace("ee", "i").replace("aaya", "aaya")  # naheen -> nahin, jeepees -> jipis
+    if r.endswith("oo"):                             # gandoo -> gandu
+        r = r[:-2] + "u"
     return r.replace("aai", "ai") if r.endswith("aai") else r
 
 
-def transcribe(path, model="small", lang="en"):
+def transcribe(path, model=None, lang="en"):
     """Word timestamps [(start, end, word)] in Roman letters (English or Hinglish)."""
-    global _whisper
     import numpy as np
     from faster_whisper import WhisperModel
-    if _whisper is None:
-        _whisper = WhisperModel(model, device="cpu", compute_type="int8")
+    model = model or WHISPER_MODEL.get(lang, "small")
+    if model not in _whisper:
+        _whisper[model] = WhisperModel(model, device="cpu", compute_type="int8")
     pcm = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1",
                           "-ar", "16000", "-"], capture_output=True, check=True).stdout
     audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768
-    segs, _ = _whisper.transcribe(audio, language=lang, word_timestamps=True, vad_filter=True,
+    segs, _ = _whisper[model].transcribe(audio, language=lang, word_timestamps=True, vad_filter=True,
                                   condition_on_previous_text=False)
     words = []
     for s in segs:
@@ -189,6 +208,7 @@ def transcribe(path, model="small", lang="en"):
             t = w.word.strip()
             if lang == "hi":
                 t = to_hinglish(t)
+            t = censor(t)
             if t:
                 words.append((w.start, w.end, t))
     return words
@@ -277,7 +297,8 @@ def ass_time(t):
     return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
 
 
-def build_ass(path, W, H, lay, words, hook_text, hook_len, offset):
+def build_ass(path, W, H, lay, words, hook_text, hook_len, offset, peak=None, total=None,
+              stamp="", btn_xy=None):
     band = lay["band"]
     s = W / 1080
     # upper third of the gameplay: sky / background, away from the streamer
@@ -293,6 +314,12 @@ def build_ass(path, W, H, lay, words, hook_text, hook_len, offset):
         f"{int(8 * s)},{int(4 * s)},5,{int(60 * s)},{int(60 * s)},0,1",
         f"Style: Hook,{FONT},{int(132 * s)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,"
         f"{int(11 * s)},{int(5 * s)},8,{int(60 * s)},{int(60 * s)},0,1",
+        f"Style: Stamp,{FONT},{int(150 * s)},&H002A2AE8,&H002A2AE8,&H00FFFFFF,&H00000000,0,0,0,0,100,100,6,0,1,"
+        f"{int(7 * s)},0,5,0,0,0,1",
+        f"Style: Btn,{FONT},{int(64 * s)},&H00FFFFFF,&H00FFFFFF,&H00F69500,&H00000000,0,0,0,0,100,100,3,0,3,"
+        f"{int(22 * s)},0,5,0,0,0,1",
+        f"Style: BtnOn,{FONT},{int(64 * s)},&H00FFFFFF,&H00FFFFFF,&H00505050,&H00000000,0,0,0,0,100,100,3,0,3,"
+        f"{int(22 * s)},0,5,0,0,0,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     # hook title: big during the intro, then stays for 2.5s
@@ -319,15 +346,34 @@ def build_ass(path, W, H, lay, words, hook_text, hook_len, offset):
                              r"{\fscx100\fscy100\bord" + str(int(8 * s)) + "}" if j == i else t)
             lines.append(f"Dialogue: 0,{ass_time(ws + offset)},{ass_time(end + offset)},Sub,,0,0,0,,"
                          f"{{\\an5\\pos({W // 2},{sub_y})}}" + " ".join(parts))
+    # stamp slam on the loudest moment (skipped if it would clash with the hook title)
+    if stamp and peak is not None and peak + offset > hook_len + 2.1:
+        t0 = peak + offset - 0.15
+        slam = (r"{\an5\pos(%d,%d)\frz-9\fscx320\fscy320\alpha&HFF&"
+                r"\t(0,140,\fscx100\fscy100\alpha&H00&)\t(140,220,\fscx112\fscy112)\t(220,300,\fscx100\fscy100)"
+                r"\fad(0,220)}" % (W // 2, int(H * 0.20)))
+        lines.append(f"Dialogue: 2,{ass_time(t0)},{ass_time(t0 + 1.3)},Stamp,,0,0,0,,{slam}{stamp}")
+    # follow button at the end: appears, gets "tapped", flips to Following
+    if total and btn_xy:
+        bx, by = btn_xy
+        a0, tap = total - 3.6, total - 2.4
+        pop = r"{\an5\pos(%d,%d)\fscx40\fscy40\t(0,200,\fscx108\fscy108)\t(200,300,\fscx100\fscy100)}" % (bx, by)
+        press = r"{\an5\pos(%d,%d)\fscx86\fscy86\t(0,160,\fscx106\fscy106)\t(160,260,\fscx100\fscy100)}" % (bx, by)
+        lines.append(f"Dialogue: 3,{ass_time(a0)},{ass_time(tap)},Btn,,0,0,0,,{pop}+ FOLLOW")
+        lines.append(f"Dialogue: 3,{ass_time(tap)},{ass_time(total)},BtnOn,,0,0,0,,{press}FOLLOWING")
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+STAMPS = {"carryminati": ["PAGAL", "NO WAY", "BHAI WTF", "INSANE", "GG", "OMG"],
+          "_": ["NO WAY", "INSANE", "BRUH", "GG", "OMG", "CRAZY"]}
+
+
+def pick_stamp(creator, seed):
+    pool = STAMPS.get(creator.lower(), STAMPS["_"])
+    return pool[int(hashlib.md5((seed + "s").encode()).hexdigest(), 16) % len(pool)]
+
+
 def pick_hook(words, peak, creator, seed):
-    near = [w[2] for w in words if peak - 2.5 <= w[0] <= peak + 1.0]
-    text = " ".join(near).strip(" .,!?-").upper()
-    letters = sum(ch.isalpha() for ch in text)
-    if 2 <= len(near) <= 7 and letters >= 6:
-        return f"“{text}”"
     pool = HOOKS.get(creator.lower(), HOOKS["_"])
     return pool[int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(pool)]
 
@@ -353,7 +399,17 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
     bump = f"exp(-pow((in_time-{peak:.2f})/0.30,2))"
     with tempfile.TemporaryDirectory() as td:
         ass = Path(td) / "subs.ass"
-        build_ass(ass, W, H, lay, words, hook, hook_len, offset=hook_len - xd)
+        total = hook_len - xd + dur
+        if lay["kind"] == "panel":
+            btn = (W // 2, H - lay["band"] - int(H * 0.045))
+        elif "cam" in lay:
+            bh = even(lay["cam"][3] * W / lay["game"][2] * 0.85)
+            bw = even(lay["cam"][2] * W / lay["game"][2] * 0.85)
+            btn = (max(bw // 2, int(W * 0.2)), H - bh - int(H * 0.035))
+        else:
+            btn = (W // 2, int(H * 0.82))
+        build_ass(ass, W, H, lay, words, hook, hook_len, offset=hook_len - xd, peak=peak, total=total,
+                  stamp=pick_stamp(creator, src.name), btn_xy=btn)
         fc = ";".join([
             video_chain(lay, W, H, "1:v", "h", "hookv",
                         zoom=f"1.0+0.22*min(on/{hook_frames},1)"),
