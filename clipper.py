@@ -9,6 +9,9 @@ Examples
   # top GTA 6 clips across ALL Kick streamers this week
   python clipper.py kick-category grand-theft-auto-vi --time week --top 30
 
+  # best moments of a long YouTube stream (run this on YOUR PC)
+  python clipper.py youtube "https://www.youtube.com/live/qSyo5d-dVzA" --top 25
+
   # top clips from a Twitch channel (last 7 days)
   python clipper.py twitch-channel kaicenat --range 7d --top 10
 """
@@ -92,14 +95,124 @@ def twitch_channel(login, rng, limit):
     } for e in entries]
 
 
+def _ytdlp(cookies):
+    cmd = ["yt-dlp"]
+    if cookies:
+        cmd += ["--cookies-from-browser", cookies]
+    return cmd
+
+
+def _loudness_per_second(path):
+    """RMS level (dB) for every second of audio, via ffmpeg astats."""
+    af = ("aresample=8000,asetnsamples=n=8000:p=0,"
+          "astats=metadata=1:reset=1,"
+          "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-")
+    out = subprocess.run(["ffmpeg", "-nostats", "-loglevel", "error", "-i", str(path),
+                          "-vn", "-ac", "1", "-af", af, "-f", "null", "-"],
+                         capture_output=True, text=True, check=True).stdout
+    levels = []
+    for line in out.splitlines():
+        if "RMS_level=" in line:
+            v = line.split("=", 1)[1]
+            levels.append(-90.0 if v in ("-inf", "inf", "nan") else max(float(v), -90.0))
+    return levels
+
+
+def _pick_peaks(levels, offset, n, spacing):
+    """Loudest moments (5s smoothed), at least `spacing` seconds apart."""
+    k = 5
+    sm = [sum(levels[max(0, i - k):i + k + 1]) / len(levels[max(0, i - k):i + k + 1])
+          for i in range(len(levels))]
+    if not sm:
+        return []
+    mean = sum(sm) / len(sm)
+    order = sorted(range(len(sm)), key=lambda i: sm[i], reverse=True)
+    picked = []
+    for i in order:
+        if all(abs(i - j) >= spacing for j, _ in picked):
+            picked.append((i, sm[i] - mean))
+        if len(picked) >= n:
+            break
+    return [(offset + i, score) for i, score in picked]
+
+
+def youtube_stream(url, limit, clip_len, cookies, workdir):
+    """Find the best moments of a long YouTube stream/VOD.
+
+    1. Use YouTube's 'Most replayed' heatmap to find the hottest regions.
+    2. Download ONLY the audio of those regions and find the loudest moments
+       (screams / hype) inside them.
+    Falls back to scanning the whole audio if the video has no heatmap.
+    """
+    info = json.loads(subprocess.run(_ytdlp(cookies) + ["-J", "--skip-download", url],
+                                     capture_output=True, text=True, check=True).stdout)
+    duration = info.get("duration") or 0
+    title, channel = info.get("title", ""), info.get("channel") or info.get("uploader") or "youtube"
+    heat = info.get("heatmap") or []
+    if heat:
+        n_regions = min(len(heat), max(3, limit))
+        regions = sorted(heat, key=lambda h: h["value"], reverse=True)[:n_regions]
+        regions = [(int(h["start_time"]), int(h["end_time"]) + 1, h["value"]) for h in regions]
+        print(f"Using 'Most replayed' heatmap: {len(regions)} hot regions")
+    else:
+        regions = [(0, int(duration), 1.0)]
+        print("No heatmap on this video: scanning the whole audio (slower)")
+
+    per_region = max(1, -(-limit // len(regions)) + 1)
+    cands = []
+    workdir.mkdir(parents=True, exist_ok=True)
+    for idx, (s, e, value) in enumerate(regions, 1):
+        audio = workdir / f"audio_{idx}.m4a"
+        print(f"  audio region {idx}/{len(regions)}: {s // 3600}h{s % 3600 // 60:02d}m - {e // 3600}h{e % 3600 // 60:02d}m")
+        subprocess.run(_ytdlp(cookies) + ["-q", "-f", "worstaudio/bestaudio", "--force-overwrites",
+                                          "--download-sections", f"*{s}-{e}", "-o", str(audio), url],
+                       check=True)
+        for t, score in _pick_peaks(_loudness_per_second(audio), s, per_region, clip_len):
+            cands.append((t, score * (0.5 + value)))
+        audio.unlink(missing_ok=True)
+
+    cands.sort(key=lambda c: c[1], reverse=True)
+    chosen = []
+    for t, score in cands:
+        if all(abs(t - u) >= clip_len for u, _ in chosen):
+            chosen.append((t, score))
+        if len(chosen) >= limit:
+            break
+
+    clips = []
+    for t, score in chosen:
+        start = max(0, t - int(clip_len * 0.6))  # keep the build-up before the peak
+        end = min(int(duration) or start + clip_len, start + clip_len)
+        clips.append({
+            "creator": safe_name(channel, 20),
+            "title": f"{title[:30]} @{start // 3600}h{start % 3600 // 60:02d}m{start % 60:02d}s",
+            "views": int(score * 100),  # hype score, used for ranking
+            "duration": end - start,
+            "created": info.get("upload_date") or "",
+            "game": "",
+            "source": url,
+            "start": start,
+            "end": end,
+            "page": f"{info.get('webpage_url', url)}&t={start}s",
+        })
+    return clips
+
+
 # ---------------------------------------------------------------- video
 def safe_name(s, n=40):
     s = re.sub(r"[^\w\- ]+", "", s, flags=re.UNICODE).strip().replace(" ", "_")
     return (s or "clip")[:n]
 
 
-def fetch(src, dst, max_seconds):
+def fetch(src, dst, max_seconds, start=None, end=None, cookies=None):
     """Download a clip (m3u8 or page URL) to dst."""
+    if start is not None:
+        subprocess.run(_ytdlp(cookies) + [
+            "-q", "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b",
+            "--merge-output-format", "mp4", "--force-overwrites",
+            "--download-sections", f"*{start}-{end}", "--force-keyframes-at-cuts",
+            "-o", str(dst), src], check=True)
+        return
     if src.endswith(".m3u8"):
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA, "-i", src]
         if max_seconds:
@@ -133,8 +246,11 @@ def to_vertical(src, dst, style):
 # ---------------------------------------------------------------- main
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("source", choices=["kick-channel", "kick-category", "twitch-channel"])
-    p.add_argument("name", help="channel slug / category slug / twitch login")
+    p.add_argument("source", choices=["kick-channel", "kick-category", "twitch-channel", "youtube"])
+    p.add_argument("name", help="channel slug / category slug / twitch login / youtube URL")
+    p.add_argument("--clip-len", type=int, default=35, help="youtube: seconds per clip")
+    p.add_argument("--cookies-from-browser", default="",
+                   help="youtube: e.g. chrome / firefox / edge, if YouTube asks to sign in")
     p.add_argument("--top", type=int, default=20, help="how many clips to make")
     p.add_argument("--time", default="month", help="kick: day | week | month | all")
     p.add_argument("--range", default="7d", help="twitch: 24hr | 7d | 30d | all")
@@ -146,11 +262,17 @@ def main():
     p.add_argument("--list-only", action="store_true", help="just print the ranking")
     a = p.parse_args()
 
-    for tool in ("ffmpeg",) + (("yt-dlp",) if a.source.startswith("twitch") else ()):
+    for tool in ("ffmpeg",) + (("yt-dlp",) if a.source in ("twitch-channel", "youtube") else ()):
         if not shutil.which(tool):
             sys.exit(f"'{tool}' is not installed / not on PATH")
 
-    if a.source == "kick-channel":
+    cookies = a.cookies_from_browser or None
+    out_name = safe_name(a.name)
+    if a.source == "youtube":
+        vid = re.search(r"(?:v=|/live/|youtu\.be/|/shorts/)([\w-]{11})", a.name)
+        out_name = vid.group(1) if vid else safe_name(a.name)
+        clips = youtube_stream(a.name, a.top, a.clip_len, cookies, Path(a.out) / out_name / "_raw")
+    elif a.source == "kick-channel":
         clips = kick_channel(a.name, a.time, a.top)
     elif a.source == "kick-category":
         clips = kick_category(a.name, a.time, a.top)
@@ -166,11 +288,12 @@ def main():
         sys.exit("No clips found for that source / filter.")
 
     for i, c in enumerate(clips, 1):
-        print(f"{i:>3}. {c['views']:>8,} views | {c['creator']:<15} | {c['duration']:>4}s | {c['title'][:50]}")
+        label = "hype" if a.source == "youtube" else "views"
+        print(f"{i:>3}. {c['views']:>8,} {label} | {c['creator']:<15} | {c['duration']:>4}s | {c['title'][:50]}")
     if a.list_only:
         return
 
-    out = Path(a.out) / safe_name(a.name)
+    out = Path(a.out) / out_name
     tmp = out / "_raw"
     tmp.mkdir(parents=True, exist_ok=True)
     index = out / "clips.csv"
@@ -178,11 +301,12 @@ def main():
         w = csv.writer(f)
         w.writerow(["rank", "file", "creator", "views", "title", "created", "original"])
         for i, c in enumerate(clips, 1):
-            name = f"{i:02d}_{c['creator']}_{c['views']}v_{safe_name(c['title'])}.mp4"
+            tag = "" if a.source == "youtube" else f"_{c['views']}v"
+            name = f"{i:02d}_{c['creator']}{tag}_{safe_name(c['title'])}.mp4"
             raw, final = tmp / name, out / name
             try:
                 print(f"[{i}/{len(clips)}] {name}")
-                fetch(c["source"], raw, a.max_seconds)
+                fetch(c["source"], raw, a.max_seconds, c.get("start"), c.get("end"), cookies)
                 to_vertical(raw, final, a.style)
                 raw.unlink(missing_ok=True)
                 w.writerow([i, name, c["creator"], c["views"], c["title"], c["created"], c["page"]])
