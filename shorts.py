@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Render a stream clip as a 9:16 Short / Reel with a streamer + gameplay layout.
+
+Layouts
+  inline  The streamer is already composited into the game (e.g. a green-screen
+          cut-out like CarryMinati). One 9:16 gameplay crop that keeps the
+          streamer inside it (so he is never shown twice), plus a text band on
+          top for the hook and subtitles.
+            [ hook + subtitles 20% ]
+            [ gameplay incl. cam 80% ]
+  panel   The streamer has a separate webcam box (e.g. N3on). Gameplay on top,
+          webcam panel at the bottom; subtitles sit on the webcam panel.
+            [ gameplay 80% ]
+            [ webcam 20% ]
+
+Extras: streamer face auto-detected per clip, word-by-word subtitles (Whisper)
+kept OFF the gameplay, a hook intro (the loudest moment played first with a
+zoom punch + white flash), and a progress bar.
+"""
+import argparse
+import hashlib
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+FONT_DIR = ROOT / "fonts"
+FONT = "Anton"
+
+TRANSITIONS = ["zoomin", "circleopen", "slideup", "fadewhite", "pixelize", "radial",
+               "smoothup", "hblur", "squeezev", "wipeup"]
+
+HOOKS = {
+    "carryminati": ["CARRY KO YE NAHI PATA THA", "GTA 6 MEIN YE KYA HO GAYA", "CARRY KA DIMAG GHOOM GAYA",
+                    "END TAK DEKHNA", "CARRY VS GTA 6", "YE GTA 6 HAI YA REAL LIFE?",
+                    "CARRY KA REACTION DEKHO", "SABSE PAGAL GTA 6 MOMENT"],
+    "n3on": ["N3ON LOST IT IN GTA 6", "WAIT FOR THE END", "GTA 6 IS INSANE",
+             "N3ON CAN'T BELIEVE THIS", "CRAZIEST GTA 6 MOMENT", "N3ON VS GTA 6"],
+    "_": ["WAIT FOR IT", "GTA 6 IS INSANE", "CRAZIEST GTA 6 MOMENT"],
+}
+
+
+# ------------------------------------------------------------------ analysis
+def probe(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height:format=duration", "-of", "json", str(path)],
+                         capture_output=True, text=True, check=True).stdout
+    d = json.loads(out)
+    s = d["streams"][0]
+    return s["width"], s["height"], float(d["format"]["duration"])
+
+
+def find_streamer_face(path, samples=14):
+    """Return the streamer's face box (x, y, w, h) in source pixels, or None.
+
+    Game characters move around; the streamer's webcam stays put. So detect
+    faces on many frames and keep the position that repeats the most.
+    """
+    import cv2
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cap = cv2.VideoCapture(str(path))
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    hits = []  # (frame_idx, x, y, w, h)
+    for k in range(samples):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(n * (k + 0.5) / samples))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        for (x, y, w, h) in cascade.detectMultiScale(gray, 1.1, 6, minSize=(50, 50)):
+            hits.append((k, x, y, w, h))
+    cap.release()
+    best, best_frames = None, 0
+    for _, x, y, w, h in hits:
+        cx, cy = x + w / 2, y + h / 2
+        group = [b for b in hits if abs(b[1] + b[3] / 2 - cx) < w * 0.6 and abs(b[2] + b[4] / 2 - cy) < h * 0.6]
+        frames = len({b[0] for b in group})
+        if frames > best_frames:
+            best_frames, best = frames, group
+    if not best or best_frames < max(3, samples // 4):
+        return None
+    med = lambda i: sorted(b[i] for b in best)[len(best) // 2]
+    return med(1), med(2), med(3), med(4)
+
+
+def loudest_second(path):
+    """Second (float) with the loudest 3s window - used for the hook."""
+    af = ("aresample=8000,asetnsamples=n=4000:p=0,astats=metadata=1:reset=1,"
+          "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-")
+    out = subprocess.run(["ffmpeg", "-nostats", "-loglevel", "error", "-i", str(path), "-vn", "-ac", "1",
+                          "-af", af, "-f", "null", "-"], capture_output=True, text=True).stdout
+    lv = []
+    for line in out.splitlines():
+        if "RMS_level=" in line:
+            v = line.split("=", 1)[1]
+            lv.append(-90.0 if v in ("-inf", "inf", "nan") else max(float(v), -90.0))
+    if len(lv) < 8:
+        return 0.0
+    win = 6  # 6 x 0.5s = 3s
+    sm = [sum(lv[i:i + win]) / win for i in range(len(lv) - win)]
+    i = max(range(len(sm)), key=sm.__getitem__)
+    return (i + win / 2) * 0.5
+
+
+_whisper = None
+
+
+def transcribe(path, model="small"):
+    """Word timestamps [(start, end, word)] in romanised / English text."""
+    global _whisper
+    import numpy as np
+    from faster_whisper import WhisperModel
+    if _whisper is None:
+        _whisper = WhisperModel(model, device="cpu", compute_type="int8")
+    pcm = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1",
+                          "-ar", "16000", "-"], capture_output=True, check=True).stdout
+    audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768
+    segs, _ = _whisper.transcribe(audio, language="en", word_timestamps=True, vad_filter=True,
+                                  condition_on_previous_text=False)
+    words = []
+    for s in segs:
+        for w in s.words or []:
+            t = w.word.strip()
+            if t:
+                words.append((w.start, w.end, t))
+    return words
+
+
+# ------------------------------------------------------------------ layout
+def even(v):
+    return int(v) // 2 * 2
+
+
+def plan_layout(layout, src_w, src_h, face, W, H):
+    """Crop boxes (x, y, w, h) in source pixels + panel heights in output px."""
+    band = even(H * 0.20) if layout == "panel" else 0
+    main_h = H - band
+    gw = even(src_h * W / main_h)  # gameplay crop width for the full source height
+    center_x = (src_w - gw) // 2
+    small_face = face is not None and face[2] < src_w * 0.16
+
+    if layout == "inline" or not small_face:
+        band = 0
+        gw = even(src_h * W / H)
+        center_x = (src_w - gw) // 2
+        x = center_x
+        if small_face:  # keep the streamer cut-out inside the crop
+            fx, fy, fw, fh = face
+            lo = max(0, fx + fw + int(fw * 1.3) - gw)   # crop must reach his right side
+            hi = min(src_w - gw, max(0, fx - int(fw * 1.3)))  # and start left of him
+            x = min(max(center_x, lo), hi) if lo <= hi else max(0, min(src_w - gw, fx - int(fw * 1.3)))
+        return {"kind": "inline", "band": band, "game": (even(x), 0, gw, src_h)}
+
+    # panel: webcam box at the bottom
+    fx, fy, fw, fh = face
+    cam_aspect = W / band
+    ch = even(min(src_h, fh * 2.2))
+    cw = even(min(src_w, ch * cam_aspect))
+    ch = even(cw / cam_aspect)
+    cx = even(min(max(0, fx + fw / 2 - cw / 2), src_w - cw))
+    cy = even(min(max(0, fy + fh * 0.45 - ch / 2), src_h - ch))
+    # gameplay crop: as central as possible but away from the webcam box
+    cam_left, cam_right = fx - fw * 1.5, fx + fw * 2.5
+    x = center_x
+    if x < cam_right and x + gw > cam_left and fy < src_h * 0.5:
+        x = int(cam_right) if fx < src_w / 2 else int(cam_left - gw)
+    x = even(min(max(0, x), src_w - gw))
+    return {"kind": "panel", "band": band, "game": (x, 0, gw, src_h), "cam": (cx, cy, cw, ch)}
+
+
+def video_chain(lay, W, H, src, label, out, zoom="1", shake="0"):
+    """filter_complex chain turning [src] into a WxH 9:16 frame [out].
+    zoom / shake are zoompan expressions (in_time = seconds) for effects."""
+    gx, gy, gw, gh = lay["game"]
+    band = lay["band"]
+    gh_out = H - band
+    # effects run at half size (cheap), then lanczos-upscale to the final size
+    zw, zh = even(W / 2), even(gh_out / 2)
+    game = (f"crop={gw}:{gh}:{gx}:{gy},scale={zw}:{zh}:flags=lanczos,fps=30,"
+            f"zoompan=z='{zoom}':d=1:s={zw}x{zh}:fps=30"
+            f":x='iw/2-(iw/zoom/2)+({shake})':y='ih/2-(ih/zoom/2)+({shake})*0.6',"
+            f"scale={W}:{gh_out}:flags=lanczos,unsharp=5:5:0.7")
+    if lay["kind"] == "inline":
+        return f"[{src}]{game},setsar=1[{out}]"
+    cx, cy, cw, ch = lay["cam"]
+    return (f"[{src}]split[{label}a][{label}b];"
+            f"[{label}a]{game}[{label}g];"
+            f"[{label}b]fps=30,crop={cw}:{ch}:{cx}:{cy},scale={W}:{band}:flags=lanczos,unsharp=5:5:0.7[{label}c];"
+            f"[{label}g][{label}c]vstack,setsar=1[{out}]")
+
+
+# ------------------------------------------------------------------ text
+def ass_time(t):
+    t = max(0, t)
+    return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
+
+
+def build_ass(path, W, H, lay, words, hook_text, hook_len, offset):
+    band = lay["band"]
+    s = W / 1080
+    # upper third of the gameplay: sky / background, away from the streamer
+    # (bottom) and the game character (centre)
+    hook_y, sub_y = int(H * 0.11), int(H * 0.30)
+    lines = [
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {W}", f"PlayResY: {H}", "WrapStyle: 0", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
+        "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Sub,{FONT},{int(112 * s)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,"
+        f"{int(8 * s)},{int(4 * s)},5,{int(60 * s)},{int(60 * s)},0,1",
+        f"Style: Hook,{FONT},{int(132 * s)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,"
+        f"{int(11 * s)},{int(5 * s)},8,{int(60 * s)},{int(60 * s)},0,1",
+        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    # hook title: big during the intro, then stays for 2.5s
+    pop = r"{\fscx70\fscy70\t(0,180,\fscx108\fscy108)\t(180,300,\fscx100\fscy100)}"
+    lines.append(f"Dialogue: 1,{ass_time(0)},{ass_time(hook_len + 2.0)},Hook,,0,0,0,,"
+                 f"{{\\pos({W // 2},{hook_y})}}{pop}{hook_text}")
+    # word-by-word subtitles, 3 words per chunk, current word highlighted
+    chunk = []
+    chunks = []
+    for w in words:
+        chunk.append(w)
+        if len(chunk) == 3 or w[2].endswith((".", "?", "!", ",")):
+            chunks.append(chunk)
+            chunk = []
+    if chunk:
+        chunks.append(chunk)
+    for ch in chunks:
+        for i, (ws, we, _) in enumerate(ch):
+            end = ch[i + 1][0] if i + 1 < len(ch) else max(we, ws + 0.25)
+            parts = []
+            for j, (_, _, t) in enumerate(ch):
+                t = t.upper().replace("{", "").replace("}", "")
+                parts.append(r"{\fscx118\fscy118\bord" + str(int(11 * s)) + "}" + t +
+                             r"{\fscx100\fscy100\bord" + str(int(8 * s)) + "}" if j == i else t)
+            lines.append(f"Dialogue: 0,{ass_time(ws + offset)},{ass_time(end + offset)},Sub,,0,0,0,,"
+                         f"{{\\an5\\pos({W // 2},{sub_y})}}" + " ".join(parts))
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def pick_hook(words, peak, creator, seed):
+    near = [w[2] for w in words if peak - 2.5 <= w[0] <= peak + 1.0]
+    text = " ".join(near).strip(" .,!?-").upper()
+    letters = sum(ch.isalpha() for ch in text)
+    if 2 <= len(near) <= 7 and letters >= 6:
+        return f"“{text}”"
+    pool = HOOKS.get(creator.lower(), HOOKS["_"])
+    return pool[int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(pool)]
+
+
+# ------------------------------------------------------------------ render
+def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len=2.5,
+                 hook_text=None, subtitles=True, log=print):
+    src, dst = Path(src), Path(dst)
+    sw, sh, dur = probe(src)
+    face = find_streamer_face(src)
+    lay = plan_layout(layout, sw, sh, face, W, H)
+    peak = loudest_second(src)
+    words = transcribe(src) if subtitles else []
+    hook = hook_text or pick_hook(words, peak, creator, src.name)
+    h0 = max(0.0, min(peak - hook_len * 0.6, dur - hook_len))
+    log(f"   face={face} layout={lay['kind']} peak={peak:.1f}s hook={hook!r} words={len(words)}")
+
+    xd = 0.45  # transition length
+    trans = TRANSITIONS[int(hashlib.md5(src.name.encode()).hexdigest(), 16) % len(TRANSITIONS)]
+    hook_frames = int(hook_len * 30)
+    # hook: slow push-in; main: zoom punch + shake on the loudest moment
+    bump = f"exp(-pow((in_time-{peak:.2f})/0.30,2))"
+    with tempfile.TemporaryDirectory() as td:
+        ass = Path(td) / "subs.ass"
+        build_ass(ass, W, H, lay, words, hook, hook_len, offset=hook_len - xd)
+        fc = ";".join([
+            video_chain(lay, W, H, "1:v", "h", "hookv",
+                        zoom=f"1.0+0.22*min(on/{hook_frames},1)"),
+            video_chain(lay, W, H, "0:v", "m", "mainv",
+                        zoom=f"1+0.14*{bump}", shake=f"9*sin(on*2.3)*{bump}"),
+            f"[hookv][mainv]xfade=transition={trans}:duration={xd}:offset={hook_len - xd:.2f}[cv]",
+            f"[1:a][0:a]acrossfade=d={xd}[ca]",
+            f"[cv]ass={ass}:fontsdir={FONT_DIR}[v]",
+            "[ca]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]",
+        ])
+        cmd = ["ffmpeg", "-y", "-loglevel", "error",
+               "-i", str(src),
+               "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(src),
+               "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-profile:v", "high",
+               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)]
+        subprocess.run(cmd, check=True)
+    return {"face": face, "layout": lay["kind"], "hook": hook, "peak": peak, "transition": trans}
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("inputs", nargs="+", help="source clips (16:9)")
+    p.add_argument("--layout", choices=["inline", "panel"], default="inline")
+    p.add_argument("--creator", default="")
+    p.add_argument("--out", default="output/shorts")
+    p.add_argument("--hd", action="store_true", help="1080x1920 instead of 4K 2160x3840")
+    p.add_argument("--no-subs", action="store_true")
+    a = p.parse_args()
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    W, H = (1080, 1920) if a.hd else (2160, 3840)
+    for src in a.inputs:
+        dst = out / Path(src).name
+        print(dst.name)
+        render_short(src, dst, a.layout, a.creator, W, H, subtitles=not a.no_subs)
+
+
+if __name__ == "__main__":
+    main()
