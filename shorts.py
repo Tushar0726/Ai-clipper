@@ -86,6 +86,58 @@ def find_streamer_face(path, samples=14):
     return med(1), med(2), med(3), med(4)
 
 
+_segmenter = None
+
+
+def cam_mask_video(src, box, dst, fps=30):
+    """Write a greyscale matte video for box=(x,y,w,h): white = streamer + chair.
+
+    Person pixels come from MediaPipe's selfie segmenter (per frame). The chair
+    is found as the pixels that never change while the game behind them moves
+    (a green-screen cut-out is static), kept only close to the person.
+    """
+    import cv2
+    import numpy as np
+    global _segmenter
+    import mediapipe as mp
+    from mediapipe.tasks.python import vision, BaseOptions
+    if _segmenter is None:
+        _segmenter = vision.ImageSegmenter.create_from_options(vision.ImageSegmenterOptions(
+            base_options=BaseOptions(model_asset_path=str(ROOT / "models" / "selfie_segmenter.tflite")),
+            output_confidence_masks=True))
+    x, y, w, h = box
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(src), "-vf",
+                          f"fps={fps},crop={w}:{h}:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, check=True).stdout
+    frames = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
+    people = []
+    for f in frames:
+        m = _segmenter.segment(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(f)))
+        m = m.confidence_masks[0].numpy_view().squeeze()
+        people.append(m)
+    people = np.array(people, np.float32)
+    if people.mean() > 0.5:  # some model versions return background confidence
+        people = 1 - people
+    # chair / static parts next to the person
+    idx = np.linspace(0, len(frames) - 1, min(40, len(frames))).astype(int)
+    grey = np.array([cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY) for i in idx], np.float32)
+    static = (grey.std(0) < 9).astype(np.uint8)
+    near = (people.max(0) > 0.5).astype(np.uint8)
+    k = max(15, int(min(w, h) * 0.22)) | 1
+    near = cv2.dilate(near, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    chair = cv2.morphologyEx(static & near, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8)).astype(np.float32)
+    enc = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray",
+                            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264", "-crf", "12",
+                            "-pix_fmt", "yuv420p", str(dst)], stdin=subprocess.PIPE)
+    for m in people:
+        a = np.maximum((m > 0.5).astype(np.float32), chair)
+        a = cv2.GaussianBlur(a, (7, 7), 0)
+        enc.stdin.write((a * 255).astype(np.uint8).tobytes())
+    enc.stdin.close()
+    enc.wait()
+    return dst
+
+
 def loudest_second(path):
     """Second (float) with the loudest 3s window - used for the hook."""
     af = ("aresample=8000,asetnsamples=n=4000:p=0,astats=metadata=1:reset=1,"
@@ -239,10 +291,10 @@ def plan_layout(layout, src_w, src_h, face, W, H):
         if small_face:
             # cut the streamer's own box out and pin it to the bottom-left corner
             fx, fy, fw, fh = face
-            bx = even(max(0, fx - fw * 1.25))
-            by = even(max(0, fy - fh * 0.7))
-            bw = even(min(src_w - bx, fw * 3.4))
-            bh = even(min(src_h - by, fh * 2.9, src_h - by))
+            bx = even(max(0, fx - fw * 1.7))
+            by = even(max(0, fy - fh * 0.8))
+            bw = even(min(src_w - bx, fw * 4.4))
+            bh = even(min(src_h - by, fh * 3.6))
             lay["cam"] = (bx, by, bw, bh)
         return lay
 
@@ -267,7 +319,7 @@ def plan_layout(layout, src_w, src_h, face, W, H):
     return {"kind": "panel", "band": band, "game": (x, 0, gw, src_h), "cam": (cx, cy, cw, ch)}
 
 
-def video_chain(lay, W, H, src, label, out, zoom="1", shake="0"):
+def video_chain(lay, W, H, src, label, out, zoom="1", shake="0", mask=None):
     """filter_complex chain turning [src] into a WxH 9:16 frame [out].
     zoom / shake are zoompan expressions (in_time = seconds) for effects."""
     gx, gy, gw, gh = lay["game"]
@@ -283,12 +335,18 @@ def video_chain(lay, W, H, src, label, out, zoom="1", shake="0"):
         if "cam" not in lay:
             return f"[{src}]{game},setsar=1[{out}]"
         bx, by, bw, bh = lay["cam"]
-        k = W / gw * 0.85                     # streamer a bit smaller than game scale: more game visible
+        k = W / gw * 0.62                     # streamer smaller than game scale: more game visible
         ow, oh = even(bw * k), even(bh * k)
+        if mask:  # cut-out of just the streamer + chair (no box)
+            cam = (f"[{label}b]fps=30,crop={bw}:{bh}:{bx}:{by},format=rgba[{label}r];"
+                   f"[{mask}]fps=30,format=gray,scale={bw}:{bh}[{label}m];"
+                   f"[{label}r][{label}m]alphamerge,scale={ow}:{oh}:flags=lanczos[{label}c];")
+        else:
+            cam = (f"[{label}b]fps=30,crop={bw}:{bh}:{bx}:{by},scale={ow}:{oh}:flags=lanczos,"
+                   f"unsharp=5:5:0.7[{label}c];")
         return (f"[{src}]split[{label}a][{label}b];"
-                f"[{label}a]{game}[{label}g];"
-                f"[{label}b]fps=30,crop={bw}:{bh}:{bx}:{by},scale={ow}:{oh}:flags=lanczos,unsharp=5:5:0.7[{label}c];"
-                f"[{label}g][{label}c]overlay=0:{H - oh},setsar=1[{out}]")
+                f"[{label}a]{game}[{label}g];" + cam +
+                f"[{label}g][{label}c]overlay=0:{H - oh}:format=auto,setsar=1[{out}]")
     cx, cy, cw, ch = lay["cam"]
     return (f"[{src}]split[{label}a][{label}b];"
             f"[{label}a]{game}[{label}g];"
@@ -415,11 +473,17 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
             btn = (W // 2, int(H * 0.82))
         build_ass(ass, W, H, lay, words, hook, hook_len, offset=hook_len - xd, peak=peak, total=total,
                   stamp=pick_stamp(creator, src.name), btn_xy=btn)
+        masked = lay["kind"] == "inline" and "cam" in lay
+        extra_in = []
+        if masked:
+            matte = Path(td) / "matte.mp4"
+            cam_mask_video(src, lay["cam"], matte)
+            extra_in = ["-i", str(matte), "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(matte)]
         fc = ";".join([
             video_chain(lay, W, H, "1:v", "h", "hookv",
-                        zoom=f"1.0+0.22*min(on/{hook_frames},1)"),
+                        zoom=f"1.0+0.22*min(on/{hook_frames},1)", mask="3:v" if masked else None),
             video_chain(lay, W, H, "0:v", "m", "mainv",
-                        zoom=f"1+0.14*{bump}", shake=f"9*sin(on*2.3)*{bump}"),
+                        zoom=f"1+0.14*{bump}", shake=f"9*sin(on*2.3)*{bump}", mask="2:v" if masked else None),
             f"[hookv][mainv]xfade=transition={trans}:duration={xd}:offset={hook_len - xd:.2f}[cv]",
             f"[1:a][0:a]acrossfade=d={xd}[ca]",
             f"[cv]ass={ass}:fontsdir={FONT_DIR}[v]",
@@ -427,7 +491,7 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
         ])
         cmd = ["ffmpeg", "-y", "-loglevel", "error",
                "-i", str(src),
-               "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(src),
+               "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(src), *extra_in,
                "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-profile:v", "high",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)]
