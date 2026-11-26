@@ -47,7 +47,7 @@ for k, (who, layout, creator, out, n, kind, x) in enumerate(queue, 1):
                 raw.unlink(missing_ok=True)
                 print(f"skip [{k}/{len(queue)}] {who}/{name}: camera only, no gameplay", flush=True)
                 continue
-            info = render_short(raw, final, layout, creator, 2160, 3840)
+            info = render_short(raw, final, layout, creator, 1080, 1920)
             raw.unlink(missing_ok=True)
             print(f"ok [{k}/{len(queue)}] {who}/{name} hook={info['hook']!r} fx={info['transition']}", flush=True)
         except Exception as e:
