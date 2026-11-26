@@ -533,14 +533,14 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
             video_chain(lay, W, H, "0:v", "m", "mainv",
                         zoom=f"1+0.14*{bump}", shake=f"9*sin(on*2.3)*{bump}", mask="2:v" if masked else None),
             f"[hookv][mainv]xfade=transition={trans}:duration={xd}:offset={hook_len - xd:.2f}[cv]",
-            f"[1:a][0:a]acrossfade=d={xd}[ca]",
+            f"[0:a]apad[a0];[1:a][a0]acrossfade=d={xd}[ca]",  # pad short/missing audio
             f"[cv]ass={ass}:fontsdir={FONT_DIR}[v]",
             "[ca]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]",
         ])
         cmd = ["ffmpeg", "-y", "-loglevel", "error",
                "-i", str(src),
                "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(src), *extra_in,
-               "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+               "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-shortest",
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-profile:v", "high",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)]
         subprocess.run(cmd, check=True)
