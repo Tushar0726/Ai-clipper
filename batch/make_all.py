@@ -25,11 +25,17 @@ for who, layout, creator, picks, n_vod in [("n3on", "panel", "n3on", [22, 24, 26
 rows = {k: [] for k in JOBS}
 queue = [j for pair in itertools.zip_longest(*JOBS.values()) for j in pair if j]
 target = {"n3on": 12 + 30, "carry": 11 + 80}
+DROP = set()
+_drop = Path("/home/user/Ai-clipper/output/DROP_LIST.txt")
+if _drop.exists():
+    DROP = {line.split("\t")[0].split("/")[-1] for line in _drop.read_text().splitlines() if line.strip()}
 for k, (who, layout, creator, out, n, kind, x) in enumerate(queue, 1):
     if len([r for r in rows[who]]) >= target[who]:
         continue
     name = f"{n:02d}_{who}_{kind}_{c.safe_name(x['title'], 28)}.mp4"
     final, raw = out / name, out / "_raw" / name
+    if name in DROP:  # reviewed earlier: no gameplay / blurry / duplicate
+        continue
     if not final.exists():
         try:
             c.fetch(x["source"], raw, 60, x.get("start"), x.get("end"), None, 0 if "start" in x else x["duration"])
