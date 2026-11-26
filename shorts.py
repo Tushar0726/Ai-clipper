@@ -121,12 +121,14 @@ def cam_mask_video(src, box, dst, fps=30):
     idx = np.linspace(0, len(frames) - 1, min(40, len(frames))).astype(int)
     grey = np.array([cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY) for i in idx], np.float32)
     static = (grey.std(0) < 9).astype(np.uint8)
+    hsv = np.array([cv2.cvtColor(frames[i], cv2.COLOR_RGB2HSV) for i in idx[:10]])
+    dark = ((grey.mean(0) < 85) & (hsv[..., 1].mean(0) < 90)).astype(np.uint8)  # black / grey, not red
     near = (people.max(0) > 0.5).astype(np.uint8)
     k = max(15, int(min(w, h) * 0.22)) | 1
     near = cv2.dilate(near, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
     # thin lines / specks are game pixels that happened to stay still: drop them, keep only
     # solid static blobs that touch the person (the chair, a can on the desk ...)
-    blob = cv2.morphologyEx(static & near, cv2.MORPH_OPEN, np.ones((13, 13), np.uint8))
+    blob = cv2.morphologyEx(static & dark & near, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
     person_any = (people.mean(0) > 0.5).astype(np.uint8)
     n, lab = cv2.connectedComponents(blob | person_any)
     keep = set(np.unique(lab[person_any > 0])) - {0}
@@ -137,21 +139,39 @@ def cam_mask_video(src, box, dst, fps=30):
                             "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "qtrle", str(dst)],
                            stdin=subprocess.PIPE)
     # the segmenter sometimes marks road lines / smoke as "person" for a few frames:
-    # smooth over time and keep only what lies near where the streamer usually is
+    # keep each frame's mask close to the streamer's usual shape, and fall back to that
+    # usual (median) shape whenever a frame's mask is clearly broken
     med = (np.median(people, 0) > 0.5).astype(np.uint8)
-    kk = max(9, int(min(w, h) * 0.10)) | 1
-    region = cv2.dilate(med, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk))).astype(np.float32)
-    core = cv2.erode(med, np.ones((9, 9), np.uint8)).astype(np.float32)
-    smooth = np.copy(people)
-    for i in range(len(people)):
-        smooth[i] = people[max(0, i - 2):i + 3].mean(0)
-    for f, m in zip(frames, smooth):
-        a = np.maximum.reduce([(m > 0.5).astype(np.float32) * region, chair, core])
+    med_area = max(1, int(med.sum()))
+    kk = max(7, int(min(w, h) * 0.05)) | 1
+    region = cv2.dilate(med, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk)))
+    _cols = np.where(med.any(0))[0]
+    med_left = int(_cols.min()) if len(_cols) else 0
+    med_mid = (_cols.min() + _cols.max()) / 2 - 0.12 * w if len(_cols) else 0
+    for i, (f, m) in enumerate(zip(frames, people)):
+        cur = (m > 0.5).astype(np.uint8)
+        outside = int((cur & (1 - region)).sum())
+        if outside > 0.08 * med_area or abs(int(cur.sum()) - med_area) > 0.35 * med_area:
+            cur = med
+        person = (cur & region).astype(np.uint8)
+        # biggest person blob only (drops cans / edge leftovers), then add the chair
+        n, lab, st, _ = cv2.connectedComponentsWithStats(person)
+        if n > 2:
+            person = (lab == 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))).astype(np.uint8)
+        a = np.maximum(person.astype(np.float32), chair)
+        a[:, :max(0, med_left - 8)] = 0   # nothing left of the streamer (cans, overlays)
+        # bright red/orange product cans next to the streamer (his maroon shirt is much darker)
+        hv = cv2.cvtColor(f, cv2.COLOR_RGB2HSV)
+        can = (hv[..., 1] > 120) & (hv[..., 2] > 150)
+        can[:, int(med_mid):] = False
+        can = cv2.dilate(can.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+        a[can] = 0
         a = cv2.GaussianBlur(a, (7, 7), 0)
         enc.stdin.write(np.dstack([f, (a * 255).astype(np.uint8)]).tobytes())
     enc.stdin.close()
     enc.wait()
-    return dst
+    cols = np.where(med.any(0))[0]
+    return (int(cols.min()), int(cols.max())) if len(cols) else (0, w)
 
 
 def loudest_second(path):
@@ -312,6 +332,7 @@ def plan_layout(layout, src_w, src_h, face, W, H):
             bw = even(min(src_w - bx, fw * 4.4))
             bh = even(min(src_h - by, fh * 3.6))
             lay["cam"] = (bx, by, bw, bh)
+
         return lay
 
     # panel: webcam box at the bottom
@@ -351,7 +372,7 @@ def video_chain(lay, W, H, src, label, out, zoom="1", shake="0", mask=None):
         if "cam" not in lay:
             return f"[{src}]{game},setsar=1[{out}]"
         bx, by, bw, bh = lay["cam"]
-        k = W / gw * 0.62                     # streamer smaller than game scale: more game visible
+        k = W / gw * 0.45                     # streamer ~40% of the width: the game stays the hero
         ow, oh = even(bw * k), even(bh * k)
         if mask:  # pre-made RGBA cut-out of just the streamer + chair (no box)
             cam = f"[{mask}]fps=30,format=rgba,scale={ow}:{oh}:flags=lanczos[{label}c];"
@@ -493,7 +514,15 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
         extra_in = []
         if masked:
             matte = Path(td) / "cutout.mov"
-            cam_mask_video(src, lay["cam"], matte)
+            left, right = cam_mask_video(src, lay["cam"], matte)
+            # keep the original streamer out of the game crop (no "two Carrys"),
+            # moving the crop only as far as his real outline needs
+            bx, gw_, gx = lay["cam"][0], lay["game"][2], lay["game"][0]
+            if bx < sw / 2 and gx < bx + right:
+                gx = even(min(sw - gw_, bx + right + 6))
+            elif bx >= sw / 2 and gx + gw_ > bx + left:
+                gx = even(max(0, bx + left - 6 - gw_))
+            lay["game"] = (gx, 0, gw_, lay["game"][3])
             extra_in = ["-i", str(matte), "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(matte)]
         fc = ";".join([
             video_chain(lay, W, H, "1:v", "h", "hookv",
