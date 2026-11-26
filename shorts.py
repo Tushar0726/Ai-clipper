@@ -200,7 +200,7 @@ WHISPER_MODEL = {"hi": "large-v3-turbo", "en": "small"}
 # swear words are starred out in subtitles (YouTube / Instagram friendly)
 SWEARS = ("gandu", "gaandu", "laude", "lode", "lauda", "loda", "lavde", "chutiya", "chutiye", "madarchod",
           "bhenchod", "behenchod", "bhosdi", "bhosdike", "bsdk", "bc", "mc", "randi", "harami", "kamina",
-          "fuck", "fucking", "fucked", "shit", "bitch", "nigga", "nigger", "dick", "pussy", "ass", "asshole")
+          "fuck", "fucking", "fucked", "motherfucker", "motherfuckers", "fucker", "fuckers", "shit", "bitch", "nigga", "nigger", "dick", "pussy", "ass", "asshole")
 
 
 def censor(word):
@@ -301,7 +301,7 @@ def transcribe(path, model=None, lang="en"):
                 continue
             if lang == "hi":
                 t = to_hinglish(t)
-            t = censor(t)
+            t = censor(t).replace("\ufffd", "")
             if t:
                 words.append((w.start, w.end, t))
     return words
