@@ -543,7 +543,14 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
                "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-shortest",
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-profile:v", "high",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)]
-        subprocess.run(cmd, check=True)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError:
+            # rare ffmpeg failure with padded audio on long clips: retry with plain crossfade
+            log("   retrying without audio padding")
+            cmd = [c.replace("[0:a]apad[a0];[1:a][a0]acrossfade", "[1:a][0:a]acrossfade") for c in cmd]
+            cmd.remove("-shortest")
+            subprocess.run(cmd, check=True)
     return {"face": face, "layout": lay["kind"], "hook": hook, "peak": peak, "transition": trans}
 
 
