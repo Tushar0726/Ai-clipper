@@ -116,8 +116,7 @@ def cam_mask_video(src, box, dst, fps=30):
         m = m.confidence_masks[0].numpy_view().squeeze()
         people.append(m)
     people = np.array(people, np.float32)
-    if people.mean() > 0.5:  # some model versions return background confidence
-        people = 1 - people
+    # confidence_masks[0] of the selfie segmenter = person (1.0 on the streamer)
     # chair / static parts next to the person
     idx = np.linspace(0, len(frames) - 1, min(40, len(frames))).astype(int)
     grey = np.array([cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY) for i in idx], np.float32)
@@ -125,7 +124,14 @@ def cam_mask_video(src, box, dst, fps=30):
     near = (people.max(0) > 0.5).astype(np.uint8)
     k = max(15, int(min(w, h) * 0.22)) | 1
     near = cv2.dilate(near, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
-    chair = cv2.morphologyEx(static & near, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8)).astype(np.float32)
+    # thin lines / specks are game pixels that happened to stay still: drop them, keep only
+    # solid static blobs that touch the person (the chair, a can on the desk ...)
+    blob = cv2.morphologyEx(static & near, cv2.MORPH_OPEN, np.ones((13, 13), np.uint8))
+    person_any = (people.mean(0) > 0.5).astype(np.uint8)
+    n, lab = cv2.connectedComponents(blob | person_any)
+    keep = set(np.unique(lab[person_any > 0])) - {0}
+    chair = (np.isin(lab, list(keep)) & (blob > 0)).astype(np.uint8)
+    chair = cv2.morphologyEx(chair, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8)).astype(np.float32)
     enc = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray",
                             "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264", "-crf", "12",
                             "-pix_fmt", "yuv420p", str(dst)], stdin=subprocess.PIPE)

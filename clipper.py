@@ -320,8 +320,10 @@ def fetch(src, dst, max_seconds, start=None, end=None, cookies=None, duration=0)
     if start is None and tail_from and not src.endswith(".m3u8"):
         start, end = tail_from, int(duration)
     if start is not None and src.endswith(".m3u8"):
+        # re-encode (not stream copy): a copy-cut starts mid-GOP and the first 1-2 s decode as garbage
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA, "-ss", str(start),
-                        "-i", src, "-t", str(end - start), "-c", "copy", str(dst)], check=True)
+                        "-i", src, "-t", str(end - start), "-c:v", "libx264", "-preset", "veryfast",
+                        "-crf", "15", "-c:a", "aac", "-b:a", "192k", str(dst)], check=True)
         return
     if start is not None:
         subprocess.run(_ytdlp(cookies) + [
@@ -337,7 +339,7 @@ def fetch(src, dst, max_seconds, start=None, end=None, cookies=None, duration=0)
         cmd += ["-i", src]
         if max_seconds:
             cmd += ["-t", str(max_seconds)]
-        cmd += ["-c", "copy", str(dst)]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-c:a", "aac", "-b:a", "192k", str(dst)]
     else:
         cmd = ["yt-dlp", "-q", "-f", "best[ext=mp4]/best", "-o", str(dst), "--force-overwrites", src]
         if max_seconds:
