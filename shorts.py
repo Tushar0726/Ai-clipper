@@ -132,13 +132,23 @@ def cam_mask_video(src, box, dst, fps=30):
     keep = set(np.unique(lab[person_any > 0])) - {0}
     chair = (np.isin(lab, list(keep)) & (blob > 0)).astype(np.uint8)
     chair = cv2.morphologyEx(chair, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8)).astype(np.float32)
-    enc = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray",
-                            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264", "-crf", "12",
-                            "-pix_fmt", "yuv420p", str(dst)], stdin=subprocess.PIPE)
-    for m in people:
-        a = np.maximum((m > 0.5).astype(np.float32), chair)
+    # RGBA cut-out video (streamer pixels + alpha), so no frame-sync between two streams later
+    enc = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba",
+                            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "qtrle", str(dst)],
+                           stdin=subprocess.PIPE)
+    # the segmenter sometimes marks road lines / smoke as "person" for a few frames:
+    # smooth over time and keep only what lies near where the streamer usually is
+    med = (np.median(people, 0) > 0.5).astype(np.uint8)
+    kk = max(9, int(min(w, h) * 0.10)) | 1
+    region = cv2.dilate(med, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk))).astype(np.float32)
+    core = cv2.erode(med, np.ones((9, 9), np.uint8)).astype(np.float32)
+    smooth = np.copy(people)
+    for i in range(len(people)):
+        smooth[i] = people[max(0, i - 2):i + 3].mean(0)
+    for f, m in zip(frames, smooth):
+        a = np.maximum.reduce([(m > 0.5).astype(np.float32) * region, chair, core])
         a = cv2.GaussianBlur(a, (7, 7), 0)
-        enc.stdin.write((a * 255).astype(np.uint8).tobytes())
+        enc.stdin.write(np.dstack([f, (a * 255).astype(np.uint8)]).tobytes())
     enc.stdin.close()
     enc.wait()
     return dst
@@ -343,10 +353,10 @@ def video_chain(lay, W, H, src, label, out, zoom="1", shake="0", mask=None):
         bx, by, bw, bh = lay["cam"]
         k = W / gw * 0.62                     # streamer smaller than game scale: more game visible
         ow, oh = even(bw * k), even(bh * k)
-        if mask:  # cut-out of just the streamer + chair (no box)
-            cam = (f"[{label}b]fps=30,crop={bw}:{bh}:{bx}:{by},format=rgba[{label}r];"
-                   f"[{mask}]fps=30,format=gray,scale={bw}:{bh}[{label}m];"
-                   f"[{label}r][{label}m]alphamerge,scale={ow}:{oh}:flags=lanczos[{label}c];")
+        if mask:  # pre-made RGBA cut-out of just the streamer + chair (no box)
+            cam = f"[{mask}]fps=30,format=rgba,scale={ow}:{oh}:flags=lanczos[{label}c];"
+            return (f"[{src}]{game}[{label}g];" + cam +
+                    f"[{label}g][{label}c]overlay=0:{H - oh}:format=auto,setsar=1[{out}]")
         else:
             cam = (f"[{label}b]fps=30,crop={bw}:{bh}:{bx}:{by},scale={ow}:{oh}:flags=lanczos,"
                    f"unsharp=5:5:0.7[{label}c];")
@@ -482,7 +492,7 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
         masked = lay["kind"] == "inline" and "cam" in lay
         extra_in = []
         if masked:
-            matte = Path(td) / "matte.mp4"
+            matte = Path(td) / "cutout.mov"
             cam_mask_video(src, lay["cam"], matte)
             extra_in = ["-i", str(matte), "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(matte)]
         fc = ";".join([
