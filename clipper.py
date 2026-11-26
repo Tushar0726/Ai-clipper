@@ -333,13 +333,23 @@ def fetch(src, dst, max_seconds, start=None, end=None, cookies=None, duration=0)
             "-o", str(dst), src], check=True)
         return
     if src.endswith(".m3u8"):
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA]
+        # Kick clip playlists: stream-copy the whole clip first (re-encoding straight from the
+        # playlist sometimes stops after a couple of seconds), then cut / re-encode the local file
+        whole = Path(str(dst) + ".whole.ts")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-user_agent", UA, "-i", src,
+                        "-c", "copy", "-f", "mpegts", str(whole)], check=True)
+        cmd = ["ffmpeg", "-y", "-loglevel", "error"]
         if tail_from:  # the hype moment is usually at the END of a clip
             cmd += ["-ss", str(tail_from)]
-        cmd += ["-i", src]
+        cmd += ["-i", str(whole)]
         if max_seconds:
             cmd += ["-t", str(max_seconds)]
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-c:a", "aac", "-b:a", "192k", str(dst)]
+        try:
+            subprocess.run(cmd, check=True)
+        finally:
+            whole.unlink(missing_ok=True)
+        return
     else:
         cmd = ["yt-dlp", "-q", "-f", "best[ext=mp4]/best", "-o", str(dst), "--force-overwrites", src]
         if max_seconds:
