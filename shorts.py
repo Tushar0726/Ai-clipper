@@ -541,7 +541,7 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
                "-i", str(src),
                "-ss", f"{h0:.2f}", "-t", f"{hook_len:.2f}", "-i", str(src), *extra_in,
                "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-shortest",
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-profile:v", "high",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-profile:v", "high",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)]
         subprocess.run(cmd, check=True)
     return {"face": face, "layout": lay["kind"], "hook": hook, "peak": peak, "transition": trans}
