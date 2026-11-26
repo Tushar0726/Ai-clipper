@@ -199,7 +199,7 @@ WHISPER_MODEL = {"hi": "large-v3-turbo", "en": "small"}
 
 # swear words are starred out in subtitles (YouTube / Instagram friendly)
 SWEARS = ("gandu", "gaandu", "laude", "lode", "lauda", "loda", "lavde", "chutiya", "chutiye", "madarchod",
-          "bhenchod", "behenchod", "bahanchut", "bahenchod", "behanchod", "bhanchod", "benchod", "bhenchodd", "madarchodd", "chod", "chut", "lund", "gaand", "gand", "bhosdi", "bhosdike", "bsdk", "bc", "mc", "randi", "harami", "kamina",
+          "bhenchod", "behenchod", "bahanchut", "bhaincho", "bhainchod", "bhainchot", "bahencho", "bahenchod", "behanchod", "bhanchod", "benchod", "bhenchodd", "madarchodd", "chod", "chut", "lund", "gaand", "gand", "bhosdi", "bhosdike", "bsdk", "bc", "mc", "randi", "harami", "kamina",
           "fuck", "fucking", "fucked", "motherfucker", "motherfuckers", "fucker", "fuckers", "shit", "bitch", "nigga", "nigger", "dick", "pussy", "ass", "asshole")
 
 
