@@ -10,7 +10,7 @@ def is_camera_only(path):
     """True when the streamer fills the screen (just chatting, no gameplay)."""
     w, _, _ = probe(path)
     face = find_streamer_face(path)
-    return face is not None and face[2] > w * 0.16
+    return face is not None and face[2] > w * 0.11  # overlay cams ~60-160px, full camera ~280px+
 S = None
 c1 = json.load(open(Path(__file__).with_name("cands.json")))
 JOBS = {}
