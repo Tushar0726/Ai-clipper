@@ -373,8 +373,8 @@ def video_chain(lay, W, H, src, label, out, zoom="1", shake="0", mask=None):
         if "cam" not in lay:
             return f"[{src}]{game},setsar=1[{out}]"
         bx, by, bw, bh = lay["cam"]
-        # same on-screen size in every stream: the streamer's face ~11% of the width
-        k = (W * 0.11 / lay["face_w"]) if lay.get("face_w") else W / gw * 0.45
+        # same on-screen size in every stream: the streamer's face ~14% of the width (~20% of the screen)
+        k = (W * 0.14 / lay["face_w"]) if lay.get("face_w") else W / gw * 0.45
         ow, oh = even(bw * k), even(bh * k)
         if mask:  # pre-made RGBA cut-out of just the streamer + chair (no box)
             cam = f"[{mask}]fps=30,format=rgba,scale={ow}:{oh}:flags=lanczos[{label}c];"
@@ -505,7 +505,7 @@ def render_short(src, dst, layout="inline", creator="", W=2160, H=3840, hook_len
         if lay["kind"] == "panel":
             btn = (W // 2, H - lay["band"] - int(H * 0.045))
         elif "cam" in lay:
-            kk = (W * 0.11 / lay["face_w"]) if lay.get("face_w") else W / lay["game"][2] * 0.45
+            kk = (W * 0.14 / lay["face_w"]) if lay.get("face_w") else W / lay["game"][2] * 0.45
             bh = even(lay["cam"][3] * kk)
             bw = even(lay["cam"][2] * kk)
             btn = (max(bw // 2, int(W * 0.2)), H - bh - int(H * 0.035))
