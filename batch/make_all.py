@@ -33,6 +33,10 @@ for k, (who, layout, creator, out, n, kind, x) in enumerate(queue, 1):
     if not final.exists():
         try:
             c.fetch(x["source"], raw, 60, x.get("start"), x.get("end"), None, 0 if "start" in x else x["duration"])
+            if kind == "stream" and layout == "panel" and find_streamer_face(raw) is None:
+                raw.unlink(missing_ok=True)  # no webcam visible: broken / blurred stretch of the stream
+                print(f"skip [{k}/{len(queue)}] {who}/{name}: no webcam found", flush=True)
+                continue
             if kind == "stream" and is_camera_only(raw):
                 raw.unlink(missing_ok=True)
                 print(f"skip [{k}/{len(queue)}] {who}/{name}: camera only, no gameplay", flush=True)
